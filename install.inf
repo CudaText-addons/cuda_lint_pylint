@@ -1,0 +1,5 @@
+[info]
+title=PyLint
+desc=Linter for CudaLint, adds support for Python lexer, uses PyLint engine
+type=cudatext-plugin
+subdir=cuda_lint_pylint
