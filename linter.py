@@ -1,22 +1,13 @@
-#
-# linter.py
-# Linter for SublimeLinter3, a code checking framework for Sublime Text 3
-#
 # Written by NotSqrt
 # Copyright (c) 2013 NotSqrt
-#
-# Changes for SynWrite by Alexey Torgashin
-#
+# Changes for CudaLint by Alexey T.
 # License: MIT
-#
-
-"""This module exports the Pylint plugin class."""
 
 import sys
 import os
 
 sys.path.append(os.path.dirname(__file__))
-from SublimeLinter.lint import PythonLinter, util
+from cuda_lint import PythonLinter, util
 
 class Pylint(PythonLinter):
     """Provides an interface to pylint."""
