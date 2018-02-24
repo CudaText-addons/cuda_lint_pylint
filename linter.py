@@ -5,9 +5,18 @@
 
 import sys
 import os
+import shutil
+import cudatext as app
 
 sys.path.append(os.path.dirname(__file__))
 from cuda_lint import PythonLinter, util
+
+config_path = os.path.join(app.app_path(app.APP_DIR_SETTINGS), 'pylint.rc')
+config_def = os.path.join(os.path.dirname(__file__), 'pylint.sample.rc')
+
+if not os.path.isfile(config_path) and os.path.isfile(config_def):
+    shutil.copyfile(config_def, config_path)
+
 
 class Pylint(PythonLinter):
     """Provides an interface to pylint."""
@@ -87,12 +96,11 @@ def get_tempname(code):
     return f.name
 
 def get_args():
-    rc = os.path.join(os.path.dirname(__file__), 'pylint.rc')
     args = [
            '--msg-template=\'{line}:{column}:{msg_id}: {msg}\'',
            '--module-rgx=.*',
            '--reports=n',
            '--persistent=n',
-           '--rcfile=%s' % rc,
+           '--rcfile=%s' % config_path,
            ]
     return args
