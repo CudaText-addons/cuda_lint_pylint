@@ -1,34 +1,73 @@
+# Copyright (c) 2006-2015 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
+# Copyright (c) 2010 Julien Jehannet <julien.jehannet@logilab.fr>
+# Copyright (c) 2013-2014 Google, Inc.
+# Copyright (c) 2014-2017 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2014 Brett Cannon <brett@python.org>
+# Copyright (c) 2014 Ricardo Gemignani <ricardo.gemignani@gmail.com>
+# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
+# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
+# Copyright (c) 2016 Moises Lopez <moylop260@vauxoo.com>
+# Copyright (c) 2016 Florian Bruhin <git@the-compiler.org>
+# Copyright (c) 2016 Jakub Wilk <jwilk@jwilk.net>
+# Copyright (c) 2017 Hugo <hugovk@users.noreply.github.com>
+
+# Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+
 # pylint: disable=W0622,C0103
-# Copyright (c) 2003-2013 LOGILAB S.A. (Paris, FRANCE).
-# http://www.logilab.fr/ -- mailto:contact@logilab.fr
-#
-# This program is free software; you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation; either version 2 of the License, or (at your option) any later
-# version.
-#
-# This program is distributed in the hope that it will be useful, but WITHOUT
-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details
-#
-# You should have received a copy of the GNU General Public License along with
-# this program; if not, write to the Free Software Foundation, Inc.,
-# 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 """pylint packaging information"""
+
+from __future__ import absolute_import
+
+from os.path import join
+from sys import version_info as py_version
+
+from pkg_resources import parse_version
+from setuptools import __version__ as setuptools_version
 
 modname = distname = 'pylint'
 
-numversion = (1, 1, 0)
+numversion = (1, 8, 2)
 version = '.'.join([str(num) for num in numversion])
 
-install_requires = ['logilab-common >= 0.53.0', 'astroid >= 0.24.3']
+install_requires = [
+    'astroid>=1.6,<2.0',
+    'six',
+    'isort >= 4.2.5',
+    'mccabe',
+]
+
+dependency_links = []
+
+extras_require = {}
+extras_require[':sys_platform=="win32"'] = ['colorama']
+
+
+def has_environment_marker_range_operators_support():
+    """Code extracted from 'pytest/setup.py'
+    https://github.com/pytest-dev/pytest/blob/7538680c/setup.py#L31
+    The first known release to support environment marker with range operators
+    it is 17.1, see: https://setuptools.readthedocs.io/en/latest/history.html#id113
+    """
+    return parse_version(setuptools_version) >= parse_version('17.1')
+
+
+if has_environment_marker_range_operators_support():
+    extras_require[':python_version=="2.7"'] = ['configparser', 'backports.functools_lru_cache']
+    extras_require[':python_version<"3.4"'] = ['singledispatch']
+else:
+    if (py_version.major, py_version.minor) == (2, 7):
+        install_requires.extend(['configparser', 'backports.functools_lru_cache'])
+    if py_version < (3, 4):
+        install_requires.extend(['singledispatch'])
+
 
 license = 'GPL'
 description = "python code static checker"
-web = 'http://www.pylint.org'
-mailinglist = "mailto://python-projects@lists.logilab.org"
-author = 'Logilab'
-author_email = 'python-projects@lists.logilab.org'
+web = 'https://github.com/PyCQA/pylint'
+mailinglist = "mailto:code-quality@python.org"
+author = 'Python Code Quality Authority'
+author_email = 'code-quality@python.org'
 
 classifiers = ['Development Status :: 4 - Beta',
                'Environment :: Console',
@@ -37,11 +76,17 @@ classifiers = ['Development Status :: 4 - Beta',
                'Operating System :: OS Independent',
                'Programming Language :: Python',
                'Programming Language :: Python :: 2',
+               'Programming Language :: Python :: 2.7',
                'Programming Language :: Python :: 3',
+               'Programming Language :: Python :: 3.4',
+               'Programming Language :: Python :: 3.5',
+               'Programming Language :: Python :: 3.6',
+               'Programming Language :: Python :: Implementation :: CPython',
+               'Programming Language :: Python :: Implementation :: PyPy',
                'Topic :: Software Development :: Debuggers',
                'Topic :: Software Development :: Quality Assurance',
-               'Topic :: Software Development :: Testing',
-               ]
+               'Topic :: Software Development :: Testing'
+              ]
 
 
 long_desc = """\
@@ -58,12 +103,11 @@ long_desc = """\
  .
  Additionally, it is possible to write plugins to add your own checks.
  .
- Pylint is shipped with "pylint-gui", "pyreverse" (UML diagram generator)
+ Pylint is shipped with "pyreverse" (UML diagram generator)
  and "symilar" (an independent similarities checker)."""
 
-from os.path import join
 scripts = [join('bin', filename)
-           for filename in ('pylint', 'pylint-gui', "symilar", "epylint",
+           for filename in ('pylint', "symilar", "epylint",
                             "pyreverse")]
 
-include_dirs = ['test']
+include_dirs = [join('pylint', 'test')]

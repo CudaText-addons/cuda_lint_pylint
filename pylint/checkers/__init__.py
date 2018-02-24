@@ -1,18 +1,15 @@
-# Copyright (c) 2003-2013 LOGILAB S.A. (Paris, FRANCE).
-# http://www.logilab.fr/ -- mailto:contact@logilab.fr
-#
-# This program is free software; you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation; either version 2 of the License, or (at your option) any later
-# version.
-#
-# This program is distributed in the hope that it will be useful, but WITHOUT
-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License along with
-# this program; if not, write to the Free Software Foundation, Inc.,
-# 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+# Copyright (c) 2006-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
+# Copyright (c) 2013-2014 Google, Inc.
+# Copyright (c) 2013 buck@yelp.com <buck@yelp.com>
+# Copyright (c) 2014-2016 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2014 Brett Cannon <brett@python.org>
+# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
+# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
+# Copyright (c) 2016 Moises Lopez <moylop260@vauxoo.com>
+
+# Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+
 """utilities methods and classes for checkers
 
 Base id of standard checkers (used in msg and report ids):
@@ -30,7 +27,10 @@ Base id of standard checkers (used in msg and report ids):
 12: logging
 13: string_format
 14: string_constant
-15-50: not yet used: reserved for future internal checkers.
+15: stdlib
+16: python3
+17: refactoring
+18-50: not yet used: reserved for future internal checkers.
 51-99: perhaps used: reserved for external checkers
 
 The raw_metrics checker has no number associated since it doesn't emit any
@@ -41,13 +41,12 @@ messages nor reports. XXX not true, emit a 07 report !
 import sys
 import tokenize
 import warnings
-from os.path import dirname
 
-from astroid.utils import ASTWalker
-from logilab.common.configuration import OptionsProviderMixIn
-
+from pylint.config import OptionsProviderMixIn
 from pylint.reporters import diff_string
 from pylint.utils import register_plugins
+from pylint.interfaces import UNDEFINED
+
 
 def table_lines_from_stats(stats, old_stats, columns):
     """get values listed in <columns> from <stats> and <old_stats>,
@@ -57,7 +56,7 @@ def table_lines_from_stats(stats, old_stats, columns):
     lines = []
     for m_type in columns:
         new = stats[m_type]
-        format = str
+        format = str # pylint: disable=redefined-builtin
         if isinstance(new, float):
             format = lambda num: '%.3f' % num
         old = old_stats.get(m_type)
@@ -70,7 +69,7 @@ def table_lines_from_stats(stats, old_stats, columns):
     return lines
 
 
-class BaseChecker(OptionsProviderMixIn, ASTWalker):
+class BaseChecker(OptionsProviderMixIn):
     """base class for checkers"""
     # checker name (you may reuse an existing one)
     name = None
@@ -82,22 +81,21 @@ class BaseChecker(OptionsProviderMixIn, ASTWalker):
     msgs = {}
     # reports issued by this checker
     reports = ()
+    # mark this checker as enabled or not.
+    enabled = True
 
     def __init__(self, linter=None):
         """checker instances should have the linter as argument
 
         linter is an object implementing ILinter
         """
-        ASTWalker.__init__(self, self)
         self.name = self.name.lower()
         OptionsProviderMixIn.__init__(self)
         self.linter = linter
-        # messages that are active for the current check
-        self.active_msgs = set()
 
-    def add_message(self, msg_id, line=None, node=None, args=None):
+    def add_message(self, msg_id, line=None, node=None, args=None, confidence=UNDEFINED):
         """add a message of a given type"""
-        self.linter.add_message(msg_id, line, node, args)
+        self.linter.add_message(msg_id, line, node, args, confidence)
 
     # dummy methods implementing the IChecker interface
 
@@ -106,31 +104,6 @@ class BaseChecker(OptionsProviderMixIn, ASTWalker):
 
     def close(self):
         """called after visiting project (i.e set of modules)"""
-
-
-class BaseRawChecker(BaseChecker):
-    """base class for raw checkers"""
-
-    def process_module(self, node):
-        """process a module
-
-        the module's content is accessible via the stream object
-
-        stream must implement the readline method
-        """
-        warnings.warn("Modules that need access to the tokens should "
-                      "use the ITokenChecker interface.",
-                      DeprecationWarning)
-        stream = node.file_stream
-        stream.seek(0) # XXX may be removed with astroid > 0.23
-        if sys.version_info <= (3, 0):
-            self.process_tokens(tokenize.generate_tokens(stream.readline))
-        else:
-            self.process_tokens(tokenize.tokenize(stream.readline))
-
-    def process_tokens(self, tokens):
-        """should be overridden by subclasses"""
-        raise NotImplementedError()
 
 
 class BaseTokenChecker(BaseChecker):

@@ -1,31 +1,121 @@
-# Copyright (c) 2003-2013 LOGILAB S.A. (Paris, FRANCE).
-# This program is free software; you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation; either version 2 of the License, or (at your option) any later
-# version.
-#
-# This program is distributed in the hope that it will be useful, but WITHOUT
-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License along with
-# this program; if not, write to the Free Software Foundation, Inc.,
-# 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+# Copyright (c) 2006-2007, 2010-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
+# Copyright (c) 2012-2014 Google, Inc.
+# Copyright (c) 2014 Brett Cannon <brett@python.org>
+# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
+# Copyright (c) 2015-2016 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2015 Florian Bruhin <me@the-compiler.org>
+# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
+# Copyright (c) 2016 y2kbugger <y2kbugger@users.noreply.github.com>
+
+# Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+
 """Plain text reporters:
 
 :text: the default one grouping messages by module
 :colorized: an ANSI colorized text reporter
 """
+from __future__ import print_function
 
+import os
 import warnings
+import sys
 
-from logilab.common.ureports import TextWriter
-from logilab.common.textutils import colorize_ansi
+import six
 
 from pylint.interfaces import IReporter
-from pylint.reporters import BaseReporter, Message
+from pylint.reporters import BaseReporter
+from pylint import utils
+from pylint.reporters.ureports.text_writer import TextWriter
+
 
 TITLE_UNDERLINES = ['', '=', '-', '.']
+
+ANSI_PREFIX = '\033['
+ANSI_END = 'm'
+ANSI_RESET = '\033[0m'
+ANSI_STYLES = {
+    'reset': "0",
+    'bold': "1",
+    'italic': "3",
+    'underline': "4",
+    'blink': "5",
+    'inverse': "7",
+    'strike': "9",
+}
+ANSI_COLORS = {
+    'reset': "0",
+    'black': "30",
+    'red': "31",
+    'green': "32",
+    'yellow': "33",
+    'blue': "34",
+    'magenta': "35",
+    'cyan': "36",
+    'white': "37",
+}
+
+def _get_ansi_code(color=None, style=None):
+    """return ansi escape code corresponding to color and style
+
+    :type color: str or None
+    :param color:
+      the color name (see `ANSI_COLORS` for available values)
+      or the color number when 256 colors are available
+
+    :type style: str or None
+    :param style:
+      style string (see `ANSI_COLORS` for available values). To get
+      several style effects at the same time, use a coma as separator.
+
+    :raise KeyError: if an unexistent color or style identifier is given
+
+    :rtype: str
+    :return: the built escape code
+    """
+    ansi_code = []
+    if style:
+        style_attrs = utils._splitstrip(style)
+        for effect in style_attrs:
+            ansi_code.append(ANSI_STYLES[effect])
+    if color:
+        if color.isdigit():
+            ansi_code.extend(['38', '5'])
+            ansi_code.append(color)
+        else:
+            ansi_code.append(ANSI_COLORS[color])
+    if ansi_code:
+        return ANSI_PREFIX + ';'.join(ansi_code) + ANSI_END
+    return ''
+
+def colorize_ansi(msg, color=None, style=None):
+    """colorize message by wrapping it with ansi escape codes
+
+    :type msg: str or unicode
+    :param msg: the message string to colorize
+
+    :type color: str or None
+    :param color:
+      the color identifier (see `ANSI_COLORS` for available values)
+
+    :type style: str or None
+    :param style:
+      style string (see `ANSI_COLORS` for available values). To get
+      several style effects at the same time, use a coma as separator.
+
+    :raise KeyError: if an unexistent color or style identifier is given
+
+    :rtype: str or unicode
+    :return: the ansi escaped string
+    """
+    # If both color and style are not defined, then leave the text as is
+    if color is None and style is None:
+        return msg
+    escape_code = _get_ansi_code(color, style)
+    # If invalid (or unknown) color, don't wrap msg with ansi codes
+    if escape_code:
+        return '%s%s%s' % (escape_code, msg, ANSI_RESET)
+    return msg
 
 
 class TextReporter(BaseReporter):
@@ -38,26 +128,25 @@ class TextReporter(BaseReporter):
 
     def __init__(self, output=None):
         BaseReporter.__init__(self, output)
-        self._modules = {}
+        self._modules = set()
         self._template = None
 
     def on_set_current_module(self, module, filepath):
-        self._template = str(self.linter.config.msg_template or self.line_format)
+        self._template = six.text_type(self.linter.config.msg_template or self.line_format)
 
     def write_message(self, msg):
         """Convenience method to write a formated message with class default template"""
         self.writeln(msg.format(self._template))
 
-    def add_message(self, msg_id, location, msg):
+    def handle_message(self, msg):
         """manage message of different type and in the context of path"""
-        m = Message(self, msg_id, location, msg)
-        if m.module not in self._modules:
-            if m.module:
-                self.writeln('************* Module %s' % m.module)
-                self._modules[m.module] = 1
+        if msg.module not in self._modules:
+            if msg.module:
+                self.writeln('************* Module %s' % msg.module)
+                self._modules.add(msg.module)
             else:
                 self.writeln('************* ')
-        self.write_message(m)
+        self.write_message(msg)
 
     def _display(self, layout):
         """launch layouts display"""
@@ -76,7 +165,8 @@ class ParseableTextReporter(TextReporter):
 
     def __init__(self, output=None):
         warnings.warn('%s output format is deprecated. This is equivalent '
-                      'to --msg-template=%s' % (self.name, self.line_format))
+                      'to --msg-template=%s' % (self.name, self.line_format),
+                      DeprecationWarning)
         TextReporter.__init__(self, output)
 
 
@@ -104,6 +194,11 @@ class ColorizedTextReporter(TextReporter):
         TextReporter.__init__(self, output)
         self.color_mapping = color_mapping or \
                              dict(ColorizedTextReporter.COLOR_MAPPING)
+        ansi_terms = ['xterm-16color', 'xterm-256color']
+        if os.environ.get('TERM') not in ansi_terms:
+            if sys.platform == 'win32':
+                import colorama
+                self.out = colorama.AnsiToWin32(self.out)
 
     def _get_decoration(self, msg_id):
         """Returns the tuple color, style associated with msg_id as defined
@@ -114,11 +209,10 @@ class ColorizedTextReporter(TextReporter):
         except KeyError:
             return None, None
 
-    def add_message(self, msg_id, location, msg):
+    def handle_message(self, msg):
         """manage message of different types, and colorize output
         using ansi escape codes
         """
-        msg = Message(self, msg_id, location, msg)
         if msg.module not in self._modules:
             color, style = self._get_decoration('S')
             if msg.module:
@@ -128,10 +222,12 @@ class ColorizedTextReporter(TextReporter):
                 modsep = colorize_ansi('************* %s' % msg.module,
                                        color, style)
             self.writeln(modsep)
-            self._modules[msg.module] = 1
+            self._modules.add(msg.module)
         color, style = self._get_decoration(msg.C)
-        for attr in ('msg', 'symbol', 'category', 'C'):
-            setattr(msg, attr, colorize_ansi(getattr(msg, attr), color, style))
+
+        msg = msg._replace(
+            **{attr: colorize_ansi(getattr(msg, attr), color, style)
+               for attr in ('msg', 'symbol', 'category', 'C')})
         self.write_message(msg)
 
 

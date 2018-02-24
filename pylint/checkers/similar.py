@@ -1,28 +1,32 @@
+# Copyright (c) 2006, 2008-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
+# Copyright (c) 2012 Ry4an Brase <ry4an-hg@ry4an.org>
+# Copyright (c) 2012 Google, Inc.
+# Copyright (c) 2012 Anthony VEREZ <anthony.verez.external@cassidian.com>
+# Copyright (c) 2014-2016 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2014 Brett Cannon <brett@python.org>
+# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
+# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
+# Copyright (c) 2017 Anthony Sottile <asottile@umich.edu>
+# Copyright (c) 2017 Mikhail Fesenko <proggga@gmail.com>
+
+# Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+
 # pylint: disable=W0622
-# Copyright (c) 2004-2013 LOGILAB S.A. (Paris, FRANCE).
-# http://www.logilab.fr/ -- mailto:contact@logilab.fr
-#
-# This program is free software; you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation; either version 2 of the License, or (at your option) any later
-# version.
-#
-# This program is distributed in the hope that it will be useful, but WITHOUT
-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details
-#
-# You should have received a copy of the GNU General Public License along with
-# this program; if not, write to the Free Software Foundation, Inc.,
-# 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 """a similarities / code duplication command line tool and pylint checker
 """
+
+from __future__ import print_function
 import sys
+from collections import defaultdict
 
+import six
+from six.moves import zip
 
-from logilab.common.ureports import Table
-
+from pylint.utils import decoding_stream
 from pylint.interfaces import IRawChecker
 from pylint.checkers import BaseChecker, table_lines_from_stats
+from pylint.reporters.ureports.nodes import Table
 
 
 class Similar(object):
@@ -38,11 +42,10 @@ class Similar(object):
 
     def append_stream(self, streamid, stream, encoding=None):
         """append a file to search for similarities"""
-        stream.seek(0) # XXX may be removed with astroid > 0.23
         if encoding is None:
             readlines = stream.readlines
         else:
-            readlines = lambda: [line.decode(encoding) for line in stream]
+            readlines = decoding_stream(stream, encoding).readlines
         try:
             self.linesets.append(LineSet(streamid,
                                          readlines(),
@@ -58,9 +61,9 @@ class Similar(object):
 
     def _compute_sims(self):
         """compute similarities in appended files"""
-        no_duplicates = {}
+        no_duplicates = defaultdict(list)
         for num, lineset1, idx1, lineset2, idx2 in self._iter_sims():
-            duplicate = no_duplicates.setdefault(num, [])
+            duplicate = no_duplicates[num]
             for couples in duplicate:
                 if (lineset1, idx1) in couples or (lineset2, idx2) in couples:
                     couples.add((lineset1, idx1))
@@ -69,7 +72,7 @@ class Similar(object):
             else:
                 duplicate.append(set([(lineset1, idx1), (lineset2, idx2)]))
         sims = []
-        for num, ensembles in no_duplicates.items():
+        for num, ensembles in six.iteritems(no_duplicates):
             for couples in ensembles:
                 sims.append((num, couples))
         sims.sort()
@@ -107,7 +110,7 @@ class Similar(object):
             for index2 in find(lineset1[index1]):
                 non_blank = 0
                 for num, ((_, line1), (_, line2)) in enumerate(
-                    zip(lines1(index1), lines2(index2))):
+                        zip(lines1(index1), lines2(index2))):
                     if line1 != line2:
                         if non_blank > min_lines:
                             yield num, lineset1, index1, lineset2, index2
@@ -207,10 +210,10 @@ class LineSet(object):
 
     def _mk_index(self):
         """create the index for this set"""
-        index = {}
+        index = defaultdict(list)
         for line_no, line in enumerate(self._stripped_lines):
             if line:
-                index.setdefault(line, []).append(line_no)
+                index[line].append(line_no)
         return index
 
 
@@ -249,16 +252,16 @@ class SimilarChecker(BaseChecker, Similar):
                ('ignore-comments',
                 {'default' : True, 'type' : 'yn', 'metavar' : '<y or n>',
                  'help': 'Ignore comments when computing similarities.'}
-                ),
+               ),
                ('ignore-docstrings',
                 {'default' : True, 'type' : 'yn', 'metavar' : '<y or n>',
                  'help': 'Ignore docstrings when computing similarities.'}
-                ),
+               ),
                ('ignore-imports',
                 {'default' : False, 'type' : 'yn', 'metavar' : '<y or n>',
                  'help': 'Ignore imports when computing similarities.'}
-                ),
-               )
+               ),
+              )
     # reports
     reports = (('RP0801', 'Duplication', report_similarities),)
 
@@ -296,11 +299,14 @@ class SimilarChecker(BaseChecker, Similar):
 
         stream must implement the readlines method
         """
-        self.append_stream(self.linter.current_name, node.file_stream, node.file_encoding)
+        with node.stream() as stream:
+            self.append_stream(self.linter.current_name,
+                               stream,
+                               node.file_encoding)
 
     def close(self):
         """compute and display similarities on closing (i.e. end of parsing)"""
-        total = sum([len(lineset) for lineset in self.linesets])
+        total = sum(len(lineset) for lineset in self.linesets)
         duplicated = 0
         stats = self.stats
         for num, couples in self._compute_sims():
@@ -357,7 +363,8 @@ def Run(argv=None):
         usage(1)
     sim = Similar(min_lines, ignore_comments, ignore_docstrings, ignore_imports)
     for filename in args:
-        sim.append_stream(filename, open(filename))
+        with open(filename) as stream:
+            sim.append_stream(filename, stream)
     sim.run()
     sys.exit(0)
 

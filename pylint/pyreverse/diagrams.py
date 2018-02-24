@@ -1,26 +1,23 @@
-# Copyright (c) 2004-2013 LOGILAB S.A. (Paris, FRANCE).
-# http://www.logilab.fr/ -- mailto:contact@logilab.fr
-#
-# This program is free software; you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation; either version 2 of the License, or (at your option) any later
-# version.
-#
-# This program is distributed in the hope that it will be useful, but WITHOUT
-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License along with
-# this program; if not, write to the Free Software Foundation, Inc.,
-# 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+# Copyright (c) 2006, 2008-2010, 2012-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
+# Copyright (c) 2014-2016 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2014 Brett Cannon <brett@python.org>
+# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
+# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
+
+# Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+
 """diagram objects
 """
 
 import astroid
 from pylint.pyreverse.utils import is_interface, FilterMixIn
+from pylint.checkers.utils import decorated_with_property
+
 
 class Figure(object):
     """base class for counter handling"""
+
 
 class Relationship(Figure):
     """a relation ship from an object in the diagram to another
@@ -40,6 +37,7 @@ class DiagramEntity(Figure):
         Figure.__init__(self)
         self.title = title
         self.node = node
+
 
 class ClassDiagram(Figure, FilterMixIn):
     """main class diagram handling
@@ -77,20 +75,30 @@ class ClassDiagram(Figure, FilterMixIn):
     def get_attrs(self, node):
         """return visible attributes, possibly with class name"""
         attrs = []
+        properties = [
+            (n, m) for n, m in node.items()
+            if isinstance(m, astroid.FunctionDef)
+            and decorated_with_property(m)
+        ]
         for node_name, ass_nodes in list(node.instance_attrs_type.items()) + \
-                                list(node.locals_type.items()):
+                                    list(node.locals_type.items()) + properties:
             if not self.show_attr(node_name):
                 continue
             names = self.class_names(ass_nodes)
             if names:
                 node_name = "%s : %s" % (node_name, ", ".join(names))
             attrs.append(node_name)
-        return attrs
+        return sorted(attrs)
 
     def get_methods(self, node):
         """return visible methods"""
-        return [m for m in list(node.values())
-                if isinstance(m, astroid.Function) and self.show_attr(m.name)]
+        methods = [
+            m for m in node.values()
+            if isinstance(m, astroid.FunctionDef)
+            and not decorated_with_property(m)
+            and self.show_attr(m.name)
+        ]
+        return sorted(methods, key=lambda n: n.name)
 
     def add_object(self, title, node):
         """create a diagram object
@@ -106,7 +114,7 @@ class ClassDiagram(Figure, FilterMixIn):
         for ass_node in nodes:
             if isinstance(ass_node, astroid.Instance):
                 ass_node = ass_node._proxied
-            if isinstance(ass_node, astroid.Class) \
+            if isinstance(ass_node, astroid.ClassDef) \
                 and hasattr(ass_node, "name") and not self.has_node(ass_node):
                 if ass_node.name not in names:
                     ass_name = ass_node.name
@@ -116,7 +124,7 @@ class ClassDiagram(Figure, FilterMixIn):
     def nodes(self):
         """return the list of underlying nodes
         """
-        return list(self._nodes.keys())
+        return self._nodes.keys()
 
     def has_node(self, node):
         """return true if the given node is included in the diagram
@@ -130,7 +138,7 @@ class ClassDiagram(Figure, FilterMixIn):
 
     def classes(self):
         """return all class nodes in the diagram"""
-        return [o for o in self.objects if isinstance(o.node, astroid.Class)]
+        return [o for o in self.objects if isinstance(o.node, astroid.ClassDef)]
 
     def classe(self, name):
         """return a class by its name, raise KeyError if not found

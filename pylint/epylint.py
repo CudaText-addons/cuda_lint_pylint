@@ -1,19 +1,22 @@
-# -*- coding: utf-8; mode: python; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- vim:fenc=utf-8:ft=python:et:sw=4:ts=4:sts=4
-# Copyright (c) 2003-2013 LOGILAB S.A. (Paris, FRANCE).
-# http://www.logilab.fr/ -- mailto:contact@logilab.fr
-#
-# This program is free software; you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation; either version 2 of the License, or (at your option) any later
-# version.
-#
-# This program is distributed in the hope that it will be useful, but WITHOUT
-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details
-#
-# You should have received a copy of the GNU General Public License along with
-# this program; if not, write to the Free Software Foundation, Inc.,
-# 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+# -*- coding: utf-8;
+# mode: python; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4
+# -*- vim:fenc=utf-8:ft=python:et:sw=4:ts=4:sts=4
+
+# Copyright (c) 2008-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
+# Copyright (c) 2014 Jakob Normark <jakobnormark@gmail.com>
+# Copyright (c) 2014 Brett Cannon <brett@python.org>
+# Copyright (c) 2014 Manuel Vázquez Acosta <mva.led@gmail.com>
+# Copyright (c) 2014 Derek Harland <derek.harland@finq.co.nz>
+# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
+# Copyright (c) 2015-2016 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2015 Mihai Balint <balint.mihai@gmail.com>
+# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
+# Copyright (c) 2017 hippo91 <guillaume.peillex@gmail.com>
+# Copyright (c) 2017 Daniela Plascencia <daplascen@gmail.com>
+
+# Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+
 """Emacs and Flymake compatible Pylint.
 
 This script is for integration with emacs and is compatible with flymake mode.
@@ -45,11 +48,23 @@ For example:
 You may also use py_run to run pylint with desired options and get back (or not)
 its output.
 """
+from __future__ import print_function
 
-import sys, os, re
+import os
 import os.path as osp
+import sys
+import shlex
 from subprocess import Popen, PIPE
 
+import six
+
+
+def _get_env():
+    '''Extracts the environment PYTHONPATH and appends the current sys.path to
+    those.'''
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.pathsep.join(sys.path)
+    return env
 
 def lint(filename, options=None):
     """Pylint the given file.
@@ -78,32 +93,19 @@ def lint(filename, options=None):
 
     # Start pylint
     # Ensure we use the python and pylint associated with the running epylint
-    from pylint import lint as lint_mod
-    lint_path = lint_mod.__file__
+    run_cmd = "import sys; from pylint.lint import Run; Run(sys.argv[1:])"
     options = options or ['--disable=C,R,I']
-    cmd = [sys.executable, lint_path] + options + ['--msg-template',
-            '{path}:{line}: [{symbol}, {obj}] {msg}', '-r', 'n', child_path]
-    process = Popen(cmd, stdout=PIPE, cwd=parent_path, universal_newlines=True)
-
-    # The parseable line format is '%(path)s:%(line)s: [%(sigle)s%(obj)s] %(msg)s'
-    # NOTE: This would be cleaner if we added an Emacs reporter to pylint.reporters.text ..
-    regex = re.compile(r"\[(?P<type>[WE])(?P<remainder>.*?)\]")
-
-    def _replacement(match_object):
-        "Alter to include 'Error' or 'Warning'"
-        if match_object.group("type") == "W":
-            replacement = "Warning"
-        else:
-            replacement = "Error"
-        # replace as "Warning (W0511, funcName): Warning Text"
-        return "%s (%s%s):" % (replacement, match_object.group("type"),
-                               match_object.group("remainder"))
+    cmd = [sys.executable, "-c", run_cmd] + [
+        '--msg-template', '{path}:{line}: {category} ({msg_id}, {symbol}, {obj}) {msg}',
+        '-r', 'n', child_path] + options
+    process = Popen(cmd, stdout=PIPE, cwd=parent_path, env=_get_env(),
+                    universal_newlines=True)
 
     for line in process.stdout:
         # remove pylintrc warning
         if line.startswith("No config file found"):
             continue
-        line = regex.sub(_replacement, line, 1)
+
         # modify the file name thats output to reverse the path traversal we made
         parts = line.split(":")
         if parts and parts[0] == child_path:
@@ -114,23 +116,22 @@ def lint(filename, options=None):
     return process.returncode
 
 
-def py_run(command_options='', return_std=False, stdout=None, stderr=None,
-           script='epylint'):
+def py_run(command_options='', return_std=False, stdout=None, stderr=None):
     """Run pylint from python
 
     ``command_options`` is a string containing ``pylint`` command line options;
-    ``return_std`` (boolean) indicates return of created standart output
+    ``return_std`` (boolean) indicates return of created standard output
     and error (see below);
-    ``stdout`` and ``stderr`` are 'file-like' objects in which standart output
+    ``stdout`` and ``stderr`` are 'file-like' objects in which standard output
     could be written.
 
     Calling agent is responsible for stdout/err management (creation, close).
-    Default standart output and error are those from sys,
+    Default standard output and error are those from sys,
     or standalone ones (``subprocess.PIPE``) are used
     if they are not set and ``return_std``.
 
     If ``return_std`` is set to ``True``, this function returns a 2-uple
-    containing standart output and error related to created process,
+    containing standard output and error related to created process,
     as follows: ``(stdout, stderr)``.
 
     A trivial usage could be as follows:
@@ -139,14 +140,15 @@ def py_run(command_options='', return_std=False, stdout=None, stderr=None,
         pylint 0.18.1,
             ...
 
-    To silently run Pylint on a module, and get its standart output and error:
+    To silently run Pylint on a module, and get its standard output and error:
         >>> (pylint_stdout, pylint_stderr) = py_run( 'module_name.py', True)
     """
     # Create command line to call pylint
-    if os.name == 'nt':
-        script += '.bat'
-    command_line = script + ' ' + command_options
-    # Providing standart output and/or error if not set
+    epylint_part = [sys.executable, "-c", "from pylint import epylint;epylint.Run()"]
+    options = shlex.split(command_options)
+    cli = epylint_part + options
+
+    # Providing standard output and/or error if not set
     if stdout is None:
         if return_std:
             stdout = PIPE
@@ -158,12 +160,13 @@ def py_run(command_options='', return_std=False, stdout=None, stderr=None,
         else:
             stderr = sys.stderr
     # Call pylint in a subprocess
-    p = Popen(command_line, shell=True, stdout=stdout, stderr=stderr,
-              universal_newlines=True)
-    p.wait()
-    # Return standart output and error
+    process = Popen(cli, shell=False, stdout=stdout, stderr=stderr,
+                    env=_get_env(), universal_newlines=True)
+    proc_stdout, proc_stderr = process.communicate()
+    # Return standard output and error
     if return_std:
-        return (p.stdout, p.stderr)
+        return six.moves.StringIO(proc_stdout), six.moves.StringIO(proc_stderr)
+    return None
 
 
 def Run():
@@ -174,9 +177,8 @@ def Run():
         print("%s does not exist" % sys.argv[1])
         sys.exit(1)
     else:
-        sys.exit(lint(sys.argv[1], sys.argv[1:]))
+        sys.exit(lint(sys.argv[1], sys.argv[2:]))
 
 
 if __name__ == '__main__':
     Run()
-
