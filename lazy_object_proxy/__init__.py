@@ -15,6 +15,9 @@ except ImportError:
 else:
     copyreg.constructor(identity)
 
-__version__ = "1.3.1"
+try:
+    from ._version import version as __version__
+except ImportError:
+    __version__ = '1.4.3'
 
 __all__ = "Proxy",

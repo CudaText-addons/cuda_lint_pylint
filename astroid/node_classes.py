@@ -1,25 +1,42 @@
-# pylint: disable=too-many-lines; https://github.com/PyCQA/astroid/issues/465
+# -*- coding: utf-8 -*-
 # Copyright (c) 2009-2011, 2013-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
-# Copyright (c) 2013-2014, 2016 Google, Inc.
-# Copyright (c) 2014-2016 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2015-2016 Cara Vinson <ceridwenv@gmail.com>
+# Copyright (c) 2010 Daniel Harding <dharding@gmail.com>
+# Copyright (c) 2012 FELD Boris <lothiraldan@gmail.com>
+# Copyright (c) 2013-2014 Google, Inc.
+# Copyright (c) 2014-2020 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2014 Eevee (Alex Munroe) <amunroe@yelp.com>
+# Copyright (c) 2015-2016 Ceridwen <ceridwenv@gmail.com>
+# Copyright (c) 2015 Florian Bruhin <me@the-compiler.org>
+# Copyright (c) 2016-2017 Derek Gustafson <degustaf@gmail.com>
+# Copyright (c) 2016 Jared Garst <jgarst@users.noreply.github.com>
 # Copyright (c) 2016 Jakub Wilk <jwilk@jwilk.net>
+# Copyright (c) 2016 Dave Baum <dbaum@google.com>
+# Copyright (c) 2017-2020 Ashley Whetter <ashley@awhetter.co.uk>
+# Copyright (c) 2017, 2019 Łukasz Rogalski <rogalski.91@gmail.com>
+# Copyright (c) 2017 rr- <rr-@sakuya.pl>
+# Copyright (c) 2018-2019 hippo91 <guillaume.peillex@gmail.com>
+# Copyright (c) 2018 Nick Drozd <nicholasdrozd@gmail.com>
+# Copyright (c) 2018 Ville Skyttä <ville.skytta@iki.fi>
+# Copyright (c) 2018 Bryce Guinta <bryce.paul.guinta@gmail.com>
+# Copyright (c) 2018 brendanator <brendan.maginnis@gmail.com>
+# Copyright (c) 2018 HoverHell <hoverhell@gmail.com>
+# Copyright (c) 2019 kavins14 <kavin.singh@mail.utoronto.ca>
+# Copyright (c) 2019 kavins14 <kavinsingh@hotmail.com>
 
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
 # For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
+
+# pylint: disable=too-many-lines; https://github.com/PyCQA/astroid/issues/465
 
 """Module for some node classes. More nodes in scoped_nodes.py
 """
 
 import abc
+import builtins as builtins_mod
+import itertools
 import pprint
-import warnings
-try:
-    from functools import singledispatch as _singledispatch
-except ImportError:
-    from singledispatch import singledispatch as _singledispatch
-
-import six
+import sys
+from functools import lru_cache, singledispatch as _singledispatch
 
 from astroid import as_string
 from astroid import bases
@@ -31,8 +48,13 @@ from astroid import mixins
 from astroid import util
 
 
-BUILTINS = six.moves.builtins.__name__
+BUILTINS = builtins_mod.__name__
 MANAGER = manager.AstroidManager()
+PY38 = sys.version_info[:2] >= (3, 8)
+
+
+def _is_const(value):
+    return isinstance(value, tuple(CONST_CLS))
 
 
 @decorators.raise_if_nothing_inferred
@@ -45,29 +67,26 @@ def unpack_infer(stmt, context=None):
             if elt is util.Uninferable:
                 yield elt
                 continue
-            for inferred_elt in unpack_infer(elt, context):
-                yield inferred_elt
-        # Explicit StopIteration to return error information, see comment
-        # in raise_if_nothing_inferred.
-        raise StopIteration(dict(node=stmt, context=context))
+            yield from unpack_infer(elt, context)
+        return dict(node=stmt, context=context)
     # if inferred is a final node, return it and stop
     inferred = next(stmt.infer(context))
     if inferred is stmt:
         yield inferred
-        # Explicit StopIteration to return error information, see comment
-        # in raise_if_nothing_inferred.
-        raise StopIteration(dict(node=stmt, context=context))
+        return dict(node=stmt, context=context)
     # else, infer recursively, except Uninferable object that should be returned as is
     for inferred in stmt.infer(context):
         if inferred is util.Uninferable:
             yield inferred
         else:
-            for inf_inf in unpack_infer(inferred, context):
-                yield inf_inf
-    raise StopIteration(dict(node=stmt, context=context))
+            yield from unpack_infer(inferred, context)
+
+    return dict(node=stmt, context=context)
 
 
-def are_exclusive(stmt1, stmt2, exceptions=None): # pylint: disable=redefined-outer-name
+def are_exclusive(
+    stmt1, stmt2, exceptions=None
+):  # pylint: disable=redefined-outer-name
     """return true if the two given statements are mutually exclusive
 
     `exceptions` may be a list of exception names. If specified, discard If
@@ -98,31 +117,41 @@ def are_exclusive(stmt1, stmt2, exceptions=None): # pylint: disable=redefined-ou
             # if the common parent is a If or TryExcept statement, look if
             # nodes are in exclusive branches
             if isinstance(node, If) and exceptions is None:
-                if (node.locate_child(previous)[1]
-                        is not node.locate_child(children[node])[1]):
+                if (
+                    node.locate_child(previous)[1]
+                    is not node.locate_child(children[node])[1]
+                ):
                     return True
             elif isinstance(node, TryExcept):
                 c2attr, c2node = node.locate_child(previous)
                 c1attr, c1node = node.locate_child(children[node])
                 if c1node is not c2node:
                     first_in_body_caught_by_handlers = (
-                        c2attr == 'handlers'
-                        and c1attr == 'body'
-                        and previous.catch(exceptions))
+                        c2attr == "handlers"
+                        and c1attr == "body"
+                        and previous.catch(exceptions)
+                    )
                     second_in_body_caught_by_handlers = (
-                        c2attr == 'body'
-                        and c1attr == 'handlers'
-                        and children[node].catch(exceptions))
+                        c2attr == "body"
+                        and c1attr == "handlers"
+                        and children[node].catch(exceptions)
+                    )
                     first_in_else_other_in_handlers = (
-                        c2attr == 'handlers' and c1attr == 'orelse')
+                        c2attr == "handlers" and c1attr == "orelse"
+                    )
                     second_in_else_other_in_handlers = (
-                        c2attr == 'orelse' and c1attr == 'handlers')
-                    if any((first_in_body_caught_by_handlers,
+                        c2attr == "orelse" and c1attr == "handlers"
+                    )
+                    if any(
+                        (
+                            first_in_body_caught_by_handlers,
                             second_in_body_caught_by_handlers,
                             first_in_else_other_in_handlers,
-                            second_in_else_other_in_handlers)):
+                            second_in_else_other_in_handlers,
+                        )
+                    ):
                         return True
-                elif c2attr == 'handlers' and c1attr == 'handlers':
+                elif c2attr == "handlers" and c1attr == "handlers":
                     return previous is not children[node]
             return False
         previous = node
@@ -170,8 +199,11 @@ def _infer_slice(node, context=None):
         return slice(lower, upper, step)
 
     raise exceptions.AstroidTypeError(
-        message='Could not infer slice used in subscript',
-        node=node, index=node.parent, context=context)
+        message="Could not infer slice used in subscript",
+        node=node,
+        index=node.parent,
+        context=context,
+    )
 
 
 def _container_getitem(instance, elts, index, context=None):
@@ -183,33 +215,60 @@ def _container_getitem(instance, elts, index, context=None):
             new_cls.elts = elts[index_slice]
             new_cls.parent = instance.parent
             return new_cls
-        elif isinstance(index, Const):
+        if isinstance(index, Const):
             return elts[index.value]
-    except IndexError:
-        util.reraise(exceptions.AstroidIndexError(
-            message='Index {index!s} out of range',
-            node=instance, index=index, context=context))
+    except IndexError as exc:
+        raise exceptions.AstroidIndexError(
+            message="Index {index!s} out of range",
+            node=instance,
+            index=index,
+            context=context,
+        ) from exc
     except TypeError as exc:
-        util.reraise(exceptions.AstroidTypeError(
-            message='Type error {error!r}', error=exc,
-            node=instance, index=index, context=context))
+        raise exceptions.AstroidTypeError(
+            message="Type error {error!r}", node=instance, index=index, context=context
+        ) from exc
 
-    raise exceptions.AstroidTypeError(
-        'Could not use %s as subscript index' % index
+    raise exceptions.AstroidTypeError("Could not use %s as subscript index" % index)
+
+
+OP_PRECEDENCE = {
+    op: precedence
+    for precedence, ops in enumerate(
+        [
+            ["Lambda"],  # lambda x: x + 1
+            ["IfExp"],  # 1 if True else 2
+            ["or"],
+            ["and"],
+            ["not"],
+            ["Compare"],  # in, not in, is, is not, <, <=, >, >=, !=, ==
+            ["|"],
+            ["^"],
+            ["&"],
+            ["<<", ">>"],
+            ["+", "-"],
+            ["*", "@", "/", "//", "%"],
+            ["UnaryOp"],  # +, -, ~
+            ["**"],
+            ["Await"],
+        ]
     )
+    for op in ops
+}
 
 
-class NodeNG(object):
+class NodeNG:
     """ A node of the new Abstract Syntax Tree (AST).
 
     This is the base class for all Astroid node classes.
     """
+
     is_statement = False
     """Whether this node indicates a statement.
 
     :type: bool
     """
-    optional_assign = False # True for For (and for Comprehension if py <3.0)
+    optional_assign = False  # True for For (and for Comprehension if py <3.0)
     """Whether this node optionally assigns a variable.
 
     This is for loop assignments because loop won't necessarily perform an
@@ -218,11 +277,12 @@ class NodeNG(object):
 
     :type: bool
     """
-    is_function = False # True for FunctionDef nodes
+    is_function = False  # True for FunctionDef nodes
     """Whether this node indicates a function.
 
     :type: bool
     """
+    is_lambda = False
     # Attributes below are set by the builder module or by raw factories
     lineno = None
     """The line that this node appears on in the source code.
@@ -288,6 +348,8 @@ class NodeNG(object):
         :returns: The inferred values.
         :rtype: iterable
         """
+        if context is not None:
+            context = context.extra_context.get(self, context)
         if self._explicit_inference is not None:
             # explicit_inference is not bound, give it self explicitly
             try:
@@ -299,12 +361,12 @@ class NodeNG(object):
         if not context:
             return self._infer(context, **kwargs)
 
-        key = (self, context.lookupname,
-               context.callcontext, context.boundnode)
+        key = (self, context.lookupname, context.callcontext, context.boundnode)
         if key in context.inferred:
             return iter(context.inferred[key])
 
-        return context.cache_generator(key, self._infer(context, **kwargs))
+        gen = context.cache_generator(key, self._infer(context, **kwargs))
+        return util.limit_inference(gen, MANAGER.max_inferable_values)
 
     def _repr_name(self):
         """Get a name for nice representation.
@@ -314,43 +376,49 @@ class NodeNG(object):
         :returns: The nice name.
         :rtype: str
         """
-        return getattr(self, 'name', getattr(self, 'attrname', ''))
+        names = {"name", "attrname"}
+        if all(name not in self._astroid_fields for name in names):
+            return getattr(self, "name", getattr(self, "attrname", ""))
+        return ""
 
     def __str__(self):
         rname = self._repr_name()
         cname = type(self).__name__
         if rname:
-            string = '%(cname)s.%(rname)s(%(fields)s)'
+            string = "%(cname)s.%(rname)s(%(fields)s)"
             alignment = len(cname) + len(rname) + 2
         else:
-            string = '%(cname)s(%(fields)s)'
+            string = "%(cname)s(%(fields)s)"
             alignment = len(cname) + 1
         result = []
         for field in self._other_fields + self._astroid_fields:
             value = getattr(self, field)
             width = 80 - len(field) - alignment
-            lines = pprint.pformat(value, indent=2,
-                                   width=width).splitlines(True)
+            lines = pprint.pformat(value, indent=2, width=width).splitlines(True)
 
             inner = [lines[0]]
             for line in lines[1:]:
-                inner.append(' ' * alignment + line)
-            result.append('%s=%s' % (field, ''.join(inner)))
+                inner.append(" " * alignment + line)
+            result.append("%s=%s" % (field, "".join(inner)))
 
-        return string % {'cname': cname,
-                         'rname': rname,
-                         'fields': (',\n' + ' ' * alignment).join(result)}
+        return string % {
+            "cname": cname,
+            "rname": rname,
+            "fields": (",\n" + " " * alignment).join(result),
+        }
 
     def __repr__(self):
         rname = self._repr_name()
         if rname:
-            string = '<%(cname)s.%(rname)s l.%(lineno)s at 0x%(id)x>'
+            string = "<%(cname)s.%(rname)s l.%(lineno)s at 0x%(id)x>"
         else:
-            string = '<%(cname)s l.%(lineno)s at 0x%(id)x>'
-        return string % {'cname': type(self).__name__,
-                         'rname': rname,
-                         'lineno': self.fromlineno,
-                         'id': id(self)}
+            string = "<%(cname)s l.%(lineno)s at 0x%(id)x>"
+        return string % {
+            "cname": type(self).__name__,
+            "rname": rname,
+            "lineno": self.fromlineno,
+            "id": id(self),
+        }
 
     def accept(self, visitor):
         """Visit this node using the given visitor."""
@@ -368,8 +436,7 @@ class NodeNG(object):
             if attr is None:
                 continue
             if isinstance(attr, (list, tuple)):
-                for elt in attr:
-                    yield elt
+                yield from attr
             else:
                 yield attr
 
@@ -381,7 +448,7 @@ class NodeNG(object):
         """
         for field in self._astroid_fields[::-1]:
             attr = getattr(self, field)
-            if not attr: # None or empty listy / tuple
+            if not attr:  # None or empty listy / tuple
                 continue
             if isinstance(attr, (list, tuple)):
                 return attr[-1]
@@ -433,7 +500,9 @@ class NodeNG(object):
         :returns: The first parent scope node.
         :rtype: Module or FunctionDef or ClassDef or Lambda or GenExpr
         """
-        return self.parent.scope()
+        if self.parent:
+            return self.parent.scope()
+        return None
 
     def root(self):
         """Return the root node of the syntax tree.
@@ -462,11 +531,13 @@ class NodeNG(object):
             if node_or_sequence is child:
                 return [node_or_sequence]
             # /!\ compiler.ast Nodes have an __iter__ walking over child nodes
-            if (isinstance(node_or_sequence, (tuple, list))
-                    and child in node_or_sequence):
+            if (
+                isinstance(node_or_sequence, (tuple, list))
+                and child in node_or_sequence
+            ):
                 return node_or_sequence
 
-        msg = 'Could not find %s in %s\'s children'
+        msg = "Could not find %s in %s's children"
         raise exceptions.AstroidError(msg % (repr(child), repr(self)))
 
     def locate_child(self, child):
@@ -487,10 +558,14 @@ class NodeNG(object):
             # /!\ compiler.ast Nodes have an __iter__ walking over child nodes
             if child is node_or_sequence:
                 return field, child
-            if isinstance(node_or_sequence, (tuple, list)) and child in node_or_sequence:
+            if (
+                isinstance(node_or_sequence, (tuple, list))
+                and child in node_or_sequence
+            ):
                 return field, node_or_sequence
-        msg = 'Could not find %s in %s\'s children'
+        msg = "Could not find %s in %s's children"
         raise exceptions.AstroidError(msg % (repr(child), repr(self)))
+
     # FIXME : should we merge child_sequence and locate_child ? locate_child
     # is only used in are_exclusive, child_sequence one time in pylint.
 
@@ -509,32 +584,6 @@ class NodeNG(object):
         :rtype: NodeNG or None
         """
         return self.parent.previous_sibling()
-
-    def nearest(self, nodes):
-        """Get the node closest to this one from the given list of nodes.
-
-        :param nodes: The list of nodes to search. All of these nodes must
-            belong to the same module as this one. The list should be
-            sorted by the line number of the nodes, smallest first.
-        :type nodes: iterable(NodeNG)
-
-        :returns: The node closest to this one in the source code,
-            or None if one could not be found.
-        :rtype: NodeNG or None
-        """
-        myroot = self.root()
-        mylineno = self.fromlineno
-        nearest = None, 0
-        for node in nodes:
-            assert node.root() is myroot, \
-                   'nodes %s and %s are not from the same module' % (self, node)
-            lineno = node.fromlineno
-            if node.fromlineno > mylineno:
-                break
-            if lineno > nearest[1]:
-                nearest = node, lineno
-        # FIXME: raise an exception if nearest is None ?
-        return nearest[0]
 
     # these are lazy because they're relatively expensive to compute for every
     # single node, and they rarely get looked at
@@ -616,35 +665,56 @@ class NodeNG(object):
         self.parent.set_local(name, stmt)
 
     def nodes_of_class(self, klass, skip_klass=None):
-        """Get the nodes (including this one or below) of the given type.
+        """Get the nodes (including this one or below) of the given types.
 
-        :param klass: The type of node to search for.
-        :type klass: builtins.type
+        :param klass: The types of node to search for.
+        :type klass: builtins.type or tuple(builtins.type)
 
-        :param skip_klass: A type of node to ignore. This is useful to ignore
+        :param skip_klass: The types of node to ignore. This is useful to ignore
             subclasses of :attr:`klass`.
-        :type skip_klass: builtins.type
+        :type skip_klass: builtins.type or tuple(builtins.type)
 
-        :returns: The node of the given type.
+        :returns: The node of the given types.
         :rtype: iterable(NodeNG)
         """
         if isinstance(self, klass):
             yield self
+
+        if skip_klass is None:
+            for child_node in self.get_children():
+                yield from child_node.nodes_of_class(klass, skip_klass)
+
+            return
+
         for child_node in self.get_children():
-            if skip_klass is not None and isinstance(child_node, skip_klass):
+            if isinstance(child_node, skip_klass):
                 continue
-            for matching in child_node.nodes_of_class(klass, skip_klass):
-                yield matching
+            yield from child_node.nodes_of_class(klass, skip_klass)
+
+    @decorators.cached
+    def _get_assign_nodes(self):
+        return []
+
+    def _get_name_nodes(self):
+        for child_node in self.get_children():
+            yield from child_node._get_name_nodes()
+
+    def _get_return_nodes_skip_functions(self):
+        yield from ()
+
+    def _get_yield_nodes_skip_lambdas(self):
+        yield from ()
 
     def _infer_name(self, frame, name):
         # overridden for ImportFrom, Import, Global, TryExcept and Arguments
-        return None
+        pass
 
     def _infer(self, context=None):
         """we don't know how to resolve a statement by default"""
         # this method is overridden by most concrete classes
-        raise exceptions.InferenceError('No inference function for {node!r}.',
-                                        node=self, context=context)
+        raise exceptions.InferenceError(
+            "No inference function for {node!r}.", node=self, context=context
+        )
 
     def inferred(self):
         """Get a list of the inferred values.
@@ -656,22 +726,8 @@ class NodeNG(object):
         """
         return list(self.infer())
 
-    def infered(self):
-        """A deprecated alias of :meth:`inferred`.
-
-        .. deprecated:: 1.5
-
-        :returns: The inferred values.
-        :rtype: list
-        """
-        warnings.warn('%s.infered() is deprecated and slated for removal '
-                      'in astroid 2.0, use %s.inferred() instead.'
-                      % (type(self).__name__, type(self).__name__),
-                      PendingDeprecationWarning, stacklevel=2)
-        return self.inferred()
-
     def instantiate_class(self):
-        """Instantiate a instance of the defined class.
+        """Instantiate an instance of the defined class.
 
         .. note::
 
@@ -711,8 +767,15 @@ class NodeNG(object):
         """
         return as_string.to_code(self)
 
-    def repr_tree(self, ids=False, include_linenos=False,
-                  ast_state=False, indent='   ', max_depth=0, max_width=80):
+    def repr_tree(
+        self,
+        ids=False,
+        include_linenos=False,
+        ast_state=False,
+        indent="   ",
+        max_depth=0,
+        max_width=80,
+    ):
         """Get a string representation of the AST from this node.
 
         :param ids: If true, includes the ids with the node type names.
@@ -741,14 +804,15 @@ class NodeNG(object):
         :returns: The string representation of the AST.
         :rtype: str
         """
+        # pylint: disable=too-many-statements
         @_singledispatch
-        def _repr_tree(node, result, done, cur_indent='', depth=1):
+        def _repr_tree(node, result, done, cur_indent="", depth=1):
             """Outputs a representation of a non-tuple/list, non-node that's
             contained within an AST, including strings.
             """
-            lines = pprint.pformat(node,
-                                   width=max(max_width - len(cur_indent),
-                                             1)).splitlines(True)
+            lines = pprint.pformat(
+                node, width=max(max_width - len(cur_indent), 1)
+            ).splitlines(True)
             result.append(lines[0])
             result.extend([cur_indent + line for line in lines[1:]])
             return len(lines) != 1
@@ -756,10 +820,10 @@ class NodeNG(object):
         # pylint: disable=unused-variable; doesn't understand singledispatch
         @_repr_tree.register(tuple)
         @_repr_tree.register(list)
-        def _repr_seq(node, result, done, cur_indent='', depth=1):
+        def _repr_seq(node, result, done, cur_indent="", depth=1):
             """Outputs a representation of a sequence that's contained within an AST."""
             cur_indent += indent
-            result.append('[')
+            result.append("[")
             if not node:
                 broken = False
             elif len(node) == 1:
@@ -767,46 +831,47 @@ class NodeNG(object):
             elif len(node) == 2:
                 broken = _repr_tree(node[0], result, done, cur_indent, depth)
                 if not broken:
-                    result.append(', ')
+                    result.append(", ")
                 else:
-                    result.append(',\n')
+                    result.append(",\n")
                     result.append(cur_indent)
-                broken = (_repr_tree(node[1], result, done, cur_indent, depth)
-                          or broken)
+                broken = _repr_tree(node[1], result, done, cur_indent, depth) or broken
             else:
-                result.append('\n')
+                result.append("\n")
                 result.append(cur_indent)
                 for child in node[:-1]:
                     _repr_tree(child, result, done, cur_indent, depth)
-                    result.append(',\n')
+                    result.append(",\n")
                     result.append(cur_indent)
                 _repr_tree(node[-1], result, done, cur_indent, depth)
                 broken = True
-            result.append(']')
+            result.append("]")
             return broken
 
         # pylint: disable=unused-variable; doesn't understand singledispatch
         @_repr_tree.register(NodeNG)
-        def _repr_node(node, result, done, cur_indent='', depth=1):
+        def _repr_node(node, result, done, cur_indent="", depth=1):
             """Outputs a strings representation of an astroid node."""
             if node in done:
-                result.append(indent + '<Recursion on %s with id=%s' %
-                              (type(node).__name__, id(node)))
+                result.append(
+                    indent
+                    + "<Recursion on %s with id=%s" % (type(node).__name__, id(node))
+                )
                 return False
-            else:
-                done.add(node)
+            done.add(node)
+
             if max_depth and depth > max_depth:
-                result.append('...')
+                result.append("...")
                 return False
             depth += 1
             cur_indent += indent
             if ids:
-                result.append('%s<0x%x>(\n' % (type(node).__name__, id(node)))
+                result.append("%s<0x%x>(\n" % (type(node).__name__, id(node)))
             else:
-                result.append('%s(' % type(node).__name__)
+                result.append("%s(" % type(node).__name__)
             fields = []
             if include_linenos:
-                fields.extend(('lineno', 'col_offset'))
+                fields.extend(("lineno", "col_offset"))
             fields.extend(node._other_fields)
             fields.extend(node._astroid_fields)
             if ast_state:
@@ -814,30 +879,29 @@ class NodeNG(object):
             if not fields:
                 broken = False
             elif len(fields) == 1:
-                result.append('%s=' % fields[0])
-                broken = _repr_tree(getattr(node, fields[0]), result, done,
-                                    cur_indent, depth)
+                result.append("%s=" % fields[0])
+                broken = _repr_tree(
+                    getattr(node, fields[0]), result, done, cur_indent, depth
+                )
             else:
-                result.append('\n')
+                result.append("\n")
                 result.append(cur_indent)
                 for field in fields[:-1]:
-                    result.append('%s=' % field)
-                    _repr_tree(getattr(node, field), result, done, cur_indent,
-                               depth)
-                    result.append(',\n')
+                    result.append("%s=" % field)
+                    _repr_tree(getattr(node, field), result, done, cur_indent, depth)
+                    result.append(",\n")
                     result.append(cur_indent)
-                result.append('%s=' % fields[-1])
-                _repr_tree(getattr(node, fields[-1]), result, done, cur_indent,
-                           depth)
+                result.append("%s=" % fields[-1])
+                _repr_tree(getattr(node, fields[-1]), result, done, cur_indent, depth)
                 broken = True
-            result.append(')')
+            result.append(")")
             return broken
 
         result = []
         _repr_tree(self, result, set())
-        return ''.join(result)
+        return "".join(result)
 
-    def bool_value(self):
+    def bool_value(self, context=None):
         """Determine the boolean value of this node.
 
         The boolean value of a node can have three
@@ -857,9 +921,18 @@ class NodeNG(object):
         """
         return util.Uninferable
 
+    def op_precedence(self):
+        # Look up by class name or default to highest precedence
+        return OP_PRECEDENCE.get(self.__class__.__name__, len(OP_PRECEDENCE))
+
+    def op_left_associative(self):
+        # Everything is left associative except `**` and IfExp
+        return True
+
 
 class Statement(NodeNG):
     """Statement node adding a few attributes"""
+
     is_statement = True
     """Whether this node indicates a statement.
 
@@ -875,7 +948,7 @@ class Statement(NodeNG):
         stmts = self.parent.child_sequence(self)
         index = stmts.index(self)
         try:
-            return stmts[index +1]
+            return stmts[index + 1]
         except IndexError:
             pass
 
@@ -888,15 +961,16 @@ class Statement(NodeNG):
         stmts = self.parent.child_sequence(self)
         index = stmts.index(self)
         if index >= 1:
-            return stmts[index -1]
+            return stmts[index - 1]
         return None
 
-@six.add_metaclass(abc.ABCMeta)
-class _BaseContainer(mixins.ParentAssignTypeMixin,
-                     NodeNG, bases.Instance):
+
+class _BaseContainer(
+    mixins.ParentAssignTypeMixin, NodeNG, bases.Instance, metaclass=abc.ABCMeta
+):
     """Base class for Set, FrozenSet, Tuple and List."""
 
-    _astroid_fields = ('elts',)
+    _astroid_fields = ("elts",)
 
     def __init__(self, lineno=None, col_offset=None, parent=None):
         """
@@ -916,7 +990,7 @@ class _BaseContainer(mixins.ParentAssignTypeMixin,
         :type: list(NodeNG)
         """
 
-        super(_BaseContainer, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, elts):
         """Do some setup after initialisation.
@@ -927,7 +1001,7 @@ class _BaseContainer(mixins.ParentAssignTypeMixin,
         self.elts = elts
 
     @classmethod
-    def from_constants(cls, elts=None):
+    def from_elements(cls, elts=None):
         """Create a node of this type from the given list of elements.
 
         :param elts: The list of elements that the node should contain.
@@ -940,7 +1014,7 @@ class _BaseContainer(mixins.ParentAssignTypeMixin,
         if elts is None:
             node.elts = []
         else:
-            node.elts = [const_factory(e) for e in elts]
+            node.elts = [const_factory(e) if _is_const(e) else e for e in elts]
         return node
 
     def itered(self):
@@ -951,7 +1025,7 @@ class _BaseContainer(mixins.ParentAssignTypeMixin,
         """
         return self.elts
 
-    def bool_value(self):
+    def bool_value(self, context=None):
         """Determine the boolean value of this node.
 
         :returns: The boolean value of this node.
@@ -967,10 +1041,14 @@ class _BaseContainer(mixins.ParentAssignTypeMixin,
         :rtype: str
         """
 
+    def get_children(self):
+        yield from self.elts
 
-class LookupMixIn(object):
+
+class LookupMixIn:
     """Mixin to look up a name in the right scope."""
 
+    @lru_cache(maxsize=None)
     def lookup(self, name):
         """Lookup where the given variable is assigned.
 
@@ -1001,6 +1079,18 @@ class LookupMixIn(object):
         frame, stmts = self.lookup(name)
         context = contextmod.InferenceContext()
         return bases._infer_stmts(stmts, context, frame)
+
+    def _get_filtered_node_statements(self, nodes):
+        statements = [(node, node.statement()) for node in nodes]
+        # Next we check if we have ExceptHandlers that are parent
+        # of the underlying variable, in which case the last one survives
+        if len(statements) > 1 and all(
+            isinstance(stmt, ExceptHandler) for _, stmt in statements
+        ):
+            statements = [
+                (node, stmt) for node, stmt in statements if stmt.parent_of(self)
+            ]
+        return statements
 
     def _filter_stmts(self, stmts, frame, offset):
         """Filter the given list of statements to remove ignorable statements.
@@ -1055,15 +1145,25 @@ class LookupMixIn(object):
         else:
             # disabling lineno filtering
             mylineno = 0
+
         _stmts = []
         _stmt_parents = []
-        for node in stmts:
-            stmt = node.statement()
+        statements = self._get_filtered_node_statements(stmts)
+
+        for node, stmt in statements:
             # line filtering is on and we have reached our location, break
-            if mylineno > 0 and stmt.fromlineno > mylineno:
+            if stmt.fromlineno > mylineno > 0:
                 break
-            assert hasattr(node, 'assign_type'), (node, node.scope(),
-                                                  node.scope().locals)
+            # Ignore decorators with the same name as the
+            # decorated function
+            # Fixes issue #375
+            if mystmt is stmt and is_from_decorator(self):
+                continue
+            assert hasattr(node, "assign_type"), (
+                node,
+                node.scope(),
+                node.scope().locals,
+            )
             assign_type = node.assign_type()
             if node.has_base(self):
                 break
@@ -1078,6 +1178,10 @@ class LookupMixIn(object):
                 # assignment
                 _stmts = [node]
                 _stmt_parents = [stmt.parent]
+                continue
+
+            if isinstance(assign_type, NamedExpr):
+                _stmts = [node]
                 continue
 
             # XXX comment various branches below!!!
@@ -1115,8 +1219,16 @@ class LookupMixIn(object):
                 # want to clear previous assignments if any (hence the test on
                 # optional_assign)
                 if not (optional_assign or are_exclusive(_stmts[pindex], node)):
-                    del _stmt_parents[pindex]
-                    del _stmts[pindex]
+                    if (
+                        # In case of partial function node, if the statement is different
+                        # from the origin function then it can be deleted otherwise it should
+                        # remain to be able to correctly infer the call to origin function.
+                        not node.is_function
+                        or node.qname() != "PartialFunction"
+                        or node.name != _stmts[pindex].name
+                    ):
+                        del _stmt_parents[pindex]
+                        del _stmts[pindex]
             if isinstance(node, AssignName):
                 if not optional_assign and stmt.parent is mystmt.parent:
                     _stmts = []
@@ -1133,7 +1245,10 @@ class LookupMixIn(object):
 
 # Name classes
 
-class AssignName(LookupMixIn, mixins.ParentAssignTypeMixin, NodeNG):
+
+class AssignName(
+    mixins.NoChildrenMixin, LookupMixIn, mixins.ParentAssignTypeMixin, NodeNG
+):
     """Variation of :class:`ast.Assign` representing assignment to a name.
 
     An :class:`AssignName` is the name of something that is assigned to.
@@ -1147,7 +1262,8 @@ class AssignName(LookupMixIn, mixins.ParentAssignTypeMixin, NodeNG):
     >>> list(node.get_children())[0].as_string()
     'variable'
     """
-    _other_fields = ('name',)
+
+    _other_fields = ("name",)
 
     def __init__(self, name=None, lineno=None, col_offset=None, parent=None):
         """
@@ -1170,11 +1286,13 @@ class AssignName(LookupMixIn, mixins.ParentAssignTypeMixin, NodeNG):
         :type: str or None
         """
 
-        super(AssignName, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
 
-class DelName(LookupMixIn, mixins.ParentAssignTypeMixin, NodeNG):
-    """Variation of :class:`ast.Delete` represention deletion of a name.
+class DelName(
+    mixins.NoChildrenMixin, LookupMixIn, mixins.ParentAssignTypeMixin, NodeNG
+):
+    """Variation of :class:`ast.Delete` representing deletion of a name.
 
     A :class:`DelName` is the name of something that is deleted.
 
@@ -1184,7 +1302,8 @@ class DelName(LookupMixIn, mixins.ParentAssignTypeMixin, NodeNG):
     >>> list(node.get_children())[0].as_string()
     'variable'
     """
-    _other_fields = ('name',)
+
+    _other_fields = ("name",)
 
     def __init__(self, name=None, lineno=None, col_offset=None, parent=None):
         """
@@ -1207,10 +1326,10 @@ class DelName(LookupMixIn, mixins.ParentAssignTypeMixin, NodeNG):
         :type: str or None
         """
 
-        super(DelName, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
 
-class Name(LookupMixIn, NodeNG):
+class Name(mixins.NoChildrenMixin, LookupMixIn, NodeNG):
     """Class representing an :class:`ast.Name` node.
 
     A :class:`Name` node is something that is named, but not covered by
@@ -1224,7 +1343,8 @@ class Name(LookupMixIn, NodeNG):
     >>> list(node.get_children())[0].as_string()
     'range'
     """
-    _other_fields = ('name',)
+
+    _other_fields = ("name",)
 
     def __init__(self, name=None, lineno=None, col_offset=None, parent=None):
         """
@@ -1247,7 +1367,13 @@ class Name(LookupMixIn, NodeNG):
         :type: str or None
         """
 
-        super(Name, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
+
+    def _get_name_nodes(self):
+        yield self
+
+        for child_node in self.get_children():
+            yield from child_node._get_name_nodes()
 
 
 class Arguments(mixins.AssignTypeMixin, NodeNG):
@@ -1262,34 +1388,45 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
     >>> node.args
     <Arguments l.1 at 0x7effe1db82e8>
     """
-    if six.PY3:
-        # Python 3.4+ uses a different approach regarding annotations,
-        # each argument is a new class, _ast.arg, which exposes an
-        # 'annotation' attribute. In astroid though, arguments are exposed
-        # as is in the Arguments node and the only way to expose annotations
-        # is by using something similar with Python 3.3:
-        #  - we expose 'varargannotation' and 'kwargannotation' of annotations
-        #    of varargs and kwargs.
-        #  - we expose 'annotation', a list with annotations for
-        #    for each normal argument. If an argument doesn't have an
-        #    annotation, its value will be None.
 
-        _astroid_fields = ('args', 'defaults', 'kwonlyargs',
-                           'kw_defaults', 'annotations', 'varargannotation',
-                           'kwargannotation', 'kwonlyargs_annotations')
-        varargannotation = None
-        """The type annotation for the variable length arguments.
+    # Python 3.4+ uses a different approach regarding annotations,
+    # each argument is a new class, _ast.arg, which exposes an
+    # 'annotation' attribute. In astroid though, arguments are exposed
+    # as is in the Arguments node and the only way to expose annotations
+    # is by using something similar with Python 3.3:
+    #  - we expose 'varargannotation' and 'kwargannotation' of annotations
+    #    of varargs and kwargs.
+    #  - we expose 'annotation', a list with annotations for
+    #    for each normal argument. If an argument doesn't have an
+    #    annotation, its value will be None.
+    # pylint: disable=too-many-instance-attributes
+    _astroid_fields = (
+        "args",
+        "defaults",
+        "kwonlyargs",
+        "posonlyargs",
+        "posonlyargs_annotations",
+        "kw_defaults",
+        "annotations",
+        "varargannotation",
+        "kwargannotation",
+        "kwonlyargs_annotations",
+        "type_comment_args",
+        "type_comment_kwonlyargs",
+        "type_comment_posonlyargs",
+    )
+    varargannotation = None
+    """The type annotation for the variable length arguments.
 
-        :type: NodeNG
-        """
-        kwargannotation = None
-        """The type annotation for the variable length keyword arguments.
+    :type: NodeNG
+    """
+    kwargannotation = None
+    """The type annotation for the variable length keyword arguments.
 
-        :type: NodeNG
-        """
-    else:
-        _astroid_fields = ('args', 'defaults', 'kwonlyargs', 'kw_defaults')
-    _other_fields = ('vararg', 'kwarg')
+    :type: NodeNG
+    """
+
+    _other_fields = ("vararg", "kwarg")
 
     def __init__(self, vararg=None, kwarg=None, parent=None):
         """
@@ -1302,7 +1439,7 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
         :param parent: The parent node in the syntax tree.
         :type parent: NodeNG or None
         """
-        super(Arguments, self).__init__(parent=parent)
+        super().__init__(parent=parent)
         self.vararg = vararg
         """The name of the variable length arguments.
 
@@ -1333,6 +1470,12 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
         :type: list(AssignName)
         """
 
+        self.posonlyargs = []
+        """The arguments that can only be passed positionally.
+
+        :type: list(AssignName)
+        """
+
         self.kw_defaults = []
         """The default values for keyword arguments that cannot be passed positionally.
 
@@ -1345,17 +1488,62 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
         :type: list(NodeNG)
         """
 
+        self.posonlyargs_annotations = []
+        """The type annotations of arguments that can only be passed positionally.
+
+        :type: list(NodeNG)
+        """
+
         self.kwonlyargs_annotations = []
         """The type annotations of arguments that cannot be passed positionally.
 
         :type: list(NodeNG)
         """
 
-    def postinit(self, args, defaults, kwonlyargs, kw_defaults,
-                 annotations,
-                 kwonlyargs_annotations=None,
-                 varargannotation=None,
-                 kwargannotation=None):
+        self.type_comment_args = []
+        """The type annotation, passed by a type comment, of each argument.
+
+        If an argument does not have a type comment,
+        the value for that argument will be None.
+
+        :type: list(NodeNG or None)
+        """
+
+        self.type_comment_kwonlyargs = []
+        """The type annotation, passed by a type comment, of each keyword only argument.
+
+        If an argument does not have a type comment,
+        the value for that argument will be None.
+
+        :type: list(NodeNG or None)
+        """
+
+        self.type_comment_posonlyargs = []
+        """The type annotation, passed by a type comment, of each positional argument.
+
+        If an argument does not have a type comment,
+        the value for that argument will be None.
+
+        :type: list(NodeNG or None)
+        """
+
+    # pylint: disable=too-many-arguments
+    def postinit(
+        self,
+        args,
+        defaults,
+        kwonlyargs,
+        kw_defaults,
+        annotations,
+        posonlyargs=None,
+        kwonlyargs_annotations=None,
+        posonlyargs_annotations=None,
+        varargannotation=None,
+        kwargannotation=None,
+        type_comment_args=None,
+        type_comment_kwonlyargs=None,
+        type_comment_posonlyargs=None,
+    ):
         """Do some setup after initialisation.
 
         :param args: The names of the required arguments.
@@ -1366,6 +1554,10 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
         :type defaults: list(NodeNG)
 
         :param kwonlyargs: The keyword arguments that cannot be passed
+            positionally.
+        :type kwonlyargs: list(AssignName)
+
+        :param posonlyargs: The arguments that can only be passed
             positionally.
         :type kwonlyargs: list(AssignName)
 
@@ -1382,6 +1574,11 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
             Python 3.
         :type kwonlyargs_annotations: list(NodeNG)
 
+        :param posonlyargs_annotations: The type annotations of arguments that
+            can only be passed positionally. This should always be passed in
+            Python 3.
+        :type posonlyargs_annotations: list(NodeNG)
+
         :param varargannotation: The type annotation for the variable length
             arguments.
         :type varargannotation: NodeNG
@@ -1389,15 +1586,34 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
         :param kwargannotation: The type annotation for the variable length
             keyword arguments.
         :type kwargannotation: NodeNG
+
+        :param type_comment_args: The type annotation,
+            passed by a type comment, of each argument.
+        :type type_comment_args: list(NodeNG or None)
+
+        :param type_comment_args: The type annotation,
+            passed by a type comment, of each keyword only argument.
+        :type type_comment_args: list(NodeNG or None)
+
+        :param type_comment_args: The type annotation,
+            passed by a type comment, of each positional argument.
+        :type type_comment_args: list(NodeNG or None)
         """
         self.args = args
         self.defaults = defaults
         self.kwonlyargs = kwonlyargs
+        self.posonlyargs = posonlyargs
         self.kw_defaults = kw_defaults
         self.annotations = annotations
         self.kwonlyargs_annotations = kwonlyargs_annotations
+        self.posonlyargs_annotations = posonlyargs_annotations
         self.varargannotation = varargannotation
         self.kwargannotation = kwargannotation
+        self.type_comment_args = type_comment_args
+        self.type_comment_kwonlyargs = type_comment_kwonlyargs
+        self.type_comment_posonlyargs = type_comment_posonlyargs
+
+    # pylint: disable=too-many-arguments
 
     def _infer_name(self, frame, name):
         if self.parent is frame:
@@ -1410,8 +1626,13 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
 
         :type: int or None
         """
-        lineno = super(Arguments, self).fromlineno
+        lineno = super().fromlineno
         return max(lineno, self.parent.fromlineno or 0)
+
+    @decorators.cachedproperty
+    def arguments(self):
+        """Get all the arguments for this node, including positional only and positional and keyword"""
+        return list(itertools.chain((self.posonlyargs or ()), self.args or ()))
 
     def format_args(self):
         """Get the arguments formatted as string.
@@ -1420,24 +1641,43 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
         :rtype: str
         """
         result = []
+        positional_only_defaults = []
+        positional_or_keyword_defaults = self.defaults
+        if self.defaults:
+            args = self.args or []
+            positional_or_keyword_defaults = self.defaults[-len(args) :]
+            positional_only_defaults = self.defaults[: len(self.defaults) - len(args)]
+
+        if self.posonlyargs:
+            result.append(
+                _format_args(
+                    self.posonlyargs,
+                    positional_only_defaults,
+                    self.posonlyargs_annotations,
+                )
+            )
+            result.append("/")
         if self.args:
             result.append(
-                _format_args(self.args, self.defaults,
-                             getattr(self, 'annotations', None))
+                _format_args(
+                    self.args,
+                    positional_or_keyword_defaults,
+                    getattr(self, "annotations", None),
+                )
             )
         if self.vararg:
-            result.append('*%s' % self.vararg)
+            result.append("*%s" % self.vararg)
         if self.kwonlyargs:
             if not self.vararg:
-                result.append('*')
-            result.append(_format_args(
-                self.kwonlyargs,
-                self.kw_defaults,
-                self.kwonlyargs_annotations
-            ))
+                result.append("*")
+            result.append(
+                _format_args(
+                    self.kwonlyargs, self.kw_defaults, self.kwonlyargs_annotations
+                )
+            )
         if self.kwarg:
-            result.append('**%s' % self.kwarg)
-        return ', '.join(result)
+            result.append("**%s" % self.kwarg)
+        return ", ".join(result)
 
     def default_value(self, argname):
         """Get the default value for an argument.
@@ -1448,14 +1688,15 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
         :raises NoDefault: If there is no default value defined for the
             given argument.
         """
-        i = _find_arg(argname, self.args)[0]
-        if i is not None:
-            idx = i - (len(self.args) - len(self.defaults))
+        args = self.arguments
+        index = _find_arg(argname, args)[0]
+        if index is not None:
+            idx = index - (len(args) - len(self.defaults))
             if idx >= 0:
                 return self.defaults[idx]
-        i = _find_arg(argname, self.kwonlyargs)[0]
-        if i is not None and self.kw_defaults[i] is not None:
-            return self.kw_defaults[i]
+        index = _find_arg(argname, self.kwonlyargs)[0]
+        if index is not None and self.kw_defaults[index] is not None:
+            return self.kw_defaults[index]
         raise exceptions.NoDefault(func=self.parent, name=argname)
 
     def is_argument(self, name):
@@ -1472,8 +1713,11 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
             return True
         if name == self.kwarg:
             return True
-        return (self.find_argname(name, True)[1] is not None or
-                self.kwonlyargs and _find_arg(name, self.kwonlyargs, True)[1] is not None)
+        return (
+            self.find_argname(name, rec=True)[1] is not None
+            or self.kwonlyargs
+            and _find_arg(name, self.kwonlyargs, rec=True)[1] is not None
+        )
 
     def find_argname(self, argname, rec=False):
         """Get the index and :class:`AssignName` node for given name.
@@ -1488,21 +1732,39 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
         :returns: The index and node for the argument.
         :rtype: tuple(str or None, AssignName or None)
         """
-        if self.args: # self.args may be None in some cases (builtin function)
-            return _find_arg(argname, self.args, rec)
+        if self.arguments:
+            return _find_arg(argname, self.arguments, rec)
         return None, None
 
     def get_children(self):
-        """Get the child nodes below this node.
+        yield from self.posonlyargs or ()
 
-        This skips over `None` elements in :attr:`kw_defaults`.
+        for elt in self.posonlyargs_annotations:
+            if elt is not None:
+                yield elt
 
-        :returns: The children.
-        :rtype: iterable(NodeNG)
-        """
-        for child in super(Arguments, self).get_children():
-            if child is not None:
-                yield child
+        yield from self.args or ()
+
+        yield from self.defaults
+        yield from self.kwonlyargs
+
+        for elt in self.kw_defaults:
+            if elt is not None:
+                yield elt
+
+        for elt in self.annotations:
+            if elt is not None:
+                yield elt
+
+        if self.varargannotation is not None:
+            yield self.varargannotation
+
+        if self.kwargannotation is not None:
+            yield self.kwargannotation
+
+        for elt in self.kwonlyargs_annotations:
+            if elt is not None:
+                yield elt
 
 
 def _find_arg(argname, args, rec=False):
@@ -1520,25 +1782,27 @@ def _find_arg(argname, args, rec=False):
 def _format_args(args, defaults=None, annotations=None):
     values = []
     if args is None:
-        return ''
+        return ""
     if annotations is None:
         annotations = []
     if defaults is not None:
         default_offset = len(args) - len(defaults)
-    packed = six.moves.zip_longest(args, annotations)
+    packed = itertools.zip_longest(args, annotations)
     for i, (arg, annotation) in enumerate(packed):
         if isinstance(arg, Tuple):
-            values.append('(%s)' % _format_args(arg.elts))
+            values.append("(%s)" % _format_args(arg.elts))
         else:
             argname = arg.name
+            default_sep = "="
             if annotation is not None:
-                argname += ':' + annotation.as_string()
+                argname += ": " + annotation.as_string()
+                default_sep = " = "
             values.append(argname)
 
             if defaults is not None and i >= default_offset:
-                if defaults[i-default_offset] is not None:
-                    values[-1] += '=' + defaults[i-default_offset].as_string()
-    return ', '.join(values)
+                if defaults[i - default_offset] is not None:
+                    values[-1] += default_sep + defaults[i - default_offset].as_string()
+    return ", ".join(values)
 
 
 class AssignAttr(mixins.ParentAssignTypeMixin, NodeNG):
@@ -1552,8 +1816,9 @@ class AssignAttr(mixins.ParentAssignTypeMixin, NodeNG):
     >>> list(node.get_children())[0].as_string()
     'self.attribute'
     """
-    _astroid_fields = ('expr',)
-    _other_fields = ('attrname',)
+
+    _astroid_fields = ("expr",)
+    _other_fields = ("attrname",)
     expr = None
     """What has the attribute that is being assigned to.
 
@@ -1581,7 +1846,7 @@ class AssignAttr(mixins.ParentAssignTypeMixin, NodeNG):
         :type: str or None
         """
 
-        super(AssignAttr, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, expr=None):
         """Do some setup after initialisation.
@@ -1590,6 +1855,9 @@ class AssignAttr(mixins.ParentAssignTypeMixin, NodeNG):
         :type expr: NodeNG or None
         """
         self.expr = expr
+
+    def get_children(self):
+        yield self.expr
 
 
 class Assert(Statement):
@@ -1601,7 +1869,8 @@ class Assert(Statement):
     >>> node
     <Assert l.1 at 0x7effe1d527b8>
     """
-    _astroid_fields = ('test', 'fail',)
+
+    _astroid_fields = ("test", "fail")
     test = None
     """The test that passes or fails the assertion.
 
@@ -1625,6 +1894,12 @@ class Assert(Statement):
         self.fail = fail
         self.test = test
 
+    def get_children(self):
+        yield self.test
+
+        if self.fail is not None:
+            yield self.fail
+
 
 class Assign(mixins.AssignTypeMixin, Statement):
     """Class representing an :class:`ast.Assign` node.
@@ -1636,7 +1911,9 @@ class Assign(mixins.AssignTypeMixin, Statement):
     >>> node
     <Assign l.1 at 0x7effe1db8550>
     """
-    _astroid_fields = ('targets', 'value',)
+
+    _astroid_fields = ("targets", "value")
+    _other_other_fields = ("type_annotation",)
     targets = None
     """What is being assigned to.
 
@@ -1647,8 +1924,13 @@ class Assign(mixins.AssignTypeMixin, Statement):
 
     :type: NodeNG or None
     """
+    type_annotation = None
+    """If present, this will contain the type annotation passed by a type comment
 
-    def postinit(self, targets=None, value=None):
+    :type: NodeNG or None
+    """
+
+    def postinit(self, targets=None, value=None, type_annotation=None):
         """Do some setup after initialisation.
 
         :param targets: What is being assigned to.
@@ -1659,6 +1941,19 @@ class Assign(mixins.AssignTypeMixin, Statement):
         """
         self.targets = targets
         self.value = value
+        self.type_annotation = type_annotation
+
+    def get_children(self):
+        yield from self.targets
+
+        yield self.value
+
+    @decorators.cached
+    def _get_assign_nodes(self):
+        return [self] + list(self.value._get_assign_nodes())
+
+    def _get_yield_nodes_skip_lambdas(self):
+        yield from self.value._get_yield_nodes_skip_lambdas()
 
 
 class AnnAssign(mixins.AssignTypeMixin, Statement):
@@ -1671,8 +1966,8 @@ class AnnAssign(mixins.AssignTypeMixin, Statement):
     <AnnAssign l.1 at 0x7effe1d4c630>
     """
 
-    _astroid_fields = ('target', 'annotation', 'value',)
-    _other_fields = ('simple',)
+    _astroid_fields = ("target", "annotation", "value")
+    _other_fields = ("simple",)
     target = None
     """What is being assigned to.
 
@@ -1715,6 +2010,13 @@ class AnnAssign(mixins.AssignTypeMixin, Statement):
         self.value = value
         self.simple = simple
 
+    def get_children(self):
+        yield self.target
+        yield self.annotation
+
+        if self.value is not None:
+            yield self.value
+
 
 class AugAssign(mixins.AssignTypeMixin, Statement):
     """Class representing an :class:`ast.AugAssign` node.
@@ -1725,8 +2027,9 @@ class AugAssign(mixins.AssignTypeMixin, Statement):
     >>> node
     <AugAssign l.1 at 0x7effe1db4d68>
     """
-    _astroid_fields = ('target', 'value')
-    _other_fields = ('op',)
+
+    _astroid_fields = ("target", "value")
+    _other_fields = ("op",)
     target = None
     """What is being assigned to.
 
@@ -1762,7 +2065,7 @@ class AugAssign(mixins.AssignTypeMixin, Statement):
         :type: str or None
         """
 
-        super(AugAssign, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, target=None, value=None):
         """Do some setup after initialisation.
@@ -1791,10 +2094,17 @@ class AugAssign(mixins.AssignTypeMixin, Statement):
         """
         try:
             results = self._infer_augassign(context=context)
-            return [result for result in results
-                    if isinstance(result, util.BadBinaryOperationMessage)]
+            return [
+                result
+                for result in results
+                if isinstance(result, util.BadBinaryOperationMessage)
+            ]
         except exceptions.InferenceError:
             return []
+
+    def get_children(self):
+        yield self.target
+        yield self.value
 
 
 class Repr(NodeNG):
@@ -1807,7 +2117,8 @@ class Repr(NodeNG):
     >>> node
     <Repr l.1 at 0x7fa0951d75d0>
     """
-    _astroid_fields = ('value',)
+
+    _astroid_fields = ("value",)
     value = None
     """What is having :func:`repr` called on it.
 
@@ -1832,8 +2143,9 @@ class BinOp(NodeNG):
     >>> node
     <BinOp l.1 at 0x7f23b2e8cfd0>
     """
-    _astroid_fields = ('left', 'right')
-    _other_fields = ('op',)
+
+    _astroid_fields = ("left", "right")
+    _other_fields = ("op",)
     left = None
     """What is being applied to the operator on the left side.
 
@@ -1866,7 +2178,7 @@ class BinOp(NodeNG):
         :type: str or None
         """
 
-        super(BinOp, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, left=None, right=None):
         """Do some setup after initialisation.
@@ -1895,10 +2207,24 @@ class BinOp(NodeNG):
         """
         try:
             results = self._infer_binop(context=context)
-            return [result for result in results
-                    if isinstance(result, util.BadBinaryOperationMessage)]
+            return [
+                result
+                for result in results
+                if isinstance(result, util.BadBinaryOperationMessage)
+            ]
         except exceptions.InferenceError:
             return []
+
+    def get_children(self):
+        yield self.left
+        yield self.right
+
+    def op_precedence(self):
+        return OP_PRECEDENCE[self.op]
+
+    def op_left_associative(self):
+        # 2**3**4 == 2**(3**4)
+        return self.op != "**"
 
 
 class BoolOp(NodeNG):
@@ -1910,8 +2236,9 @@ class BoolOp(NodeNG):
     >>> node
     <BinOp l.1 at 0x7f23b2e71c50>
     """
-    _astroid_fields = ('values',)
-    _other_fields = ('op',)
+
+    _astroid_fields = ("values",)
+    _other_fields = ("op",)
     values = None
     """The values being applied to the operator.
 
@@ -1939,7 +2266,7 @@ class BoolOp(NodeNG):
         :type: str or None
         """
 
-        super(BoolOp, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, values=None):
         """Do some setup after initialisation.
@@ -1949,8 +2276,14 @@ class BoolOp(NodeNG):
         """
         self.values = values
 
+    def get_children(self):
+        yield from self.values
 
-class Break(Statement):
+    def op_precedence(self):
+        return OP_PRECEDENCE[self.op]
+
+
+class Break(mixins.NoChildrenMixin, Statement):
     """Class representing an :class:`ast.Break` node.
 
     >>> node = astroid.extract_node('break')
@@ -1968,7 +2301,8 @@ class Call(NodeNG):
     >>> node
     <Call l.1 at 0x7f23b2e71eb8>
     """
-    _astroid_fields = ('func', 'args', 'keywords')
+
+    _astroid_fields = ("func", "args", "keywords")
     func = None
     """What is being called.
 
@@ -2019,6 +2353,13 @@ class Call(NodeNG):
         keywords = self.keywords or []
         return [keyword for keyword in keywords if keyword.arg is None]
 
+    def get_children(self):
+        yield self.func
+
+        yield from self.args
+
+        yield from self.keywords or ()
+
 
 class Compare(NodeNG):
     """Class representing an :class:`ast.Compare` node.
@@ -2031,7 +2372,8 @@ class Compare(NodeNG):
     >>> node.ops
     [('<=', <Name.b l.1 at 0x7f23b2e9e2b0>), ('<=', <Name.c l.1 at 0x7f23b2e9e390>)]
     """
-    _astroid_fields = ('left', 'ops',)
+
+    _astroid_fields = ("left", "ops")
     left = None
     """The value at the left being applied to a comparison operator.
 
@@ -2068,7 +2410,7 @@ class Compare(NodeNG):
         """
         yield self.left
         for _, comparator in self.ops:
-            yield comparator # we don't want the 'op'
+            yield comparator  # we don't want the 'op'
 
     def last_child(self):
         """An optimized version of list(get_children())[-1]
@@ -2078,7 +2420,7 @@ class Compare(NodeNG):
         """
         # XXX maybe if self.ops:
         return self.ops[-1][1]
-        #return self.left
+        # return self.left
 
 
 class Comprehension(NodeNG):
@@ -2093,8 +2435,9 @@ class Comprehension(NodeNG):
     >>> list(node.get_children())[1].as_string()
     'for x in some_values'
     """
-    _astroid_fields = ('target', 'iter', 'ifs')
-    _other_fields = ('is_async',)
+
+    _astroid_fields = ("target", "iter", "ifs")
+    _other_fields = ("is_async",)
     target = None
     """What is assigned to by the comprehension.
 
@@ -2121,7 +2464,7 @@ class Comprehension(NodeNG):
         :param parent: The parent node in the syntax tree.
         :type parent: NodeNG or None
         """
-        super(Comprehension, self).__init__()
+        super().__init__()
         self.parent = parent
 
     # pylint: disable=redefined-builtin; same name as builtin ast module.
@@ -2151,6 +2494,7 @@ class Comprehension(NodeNG):
 
     :type: bool
     """
+
     def assign_type(self):
         """The type of assignment that this node performs.
 
@@ -2158,20 +2502,6 @@ class Comprehension(NodeNG):
         :rtype: NodeNG
         """
         return self
-
-    def ass_type(self):
-        """A deprecated alias of :meth:`assign_type`.
-
-        .. deprecated:: 1.5
-
-        :returns: The assignment type.
-        :rtype: NodeNG
-        """
-        warnings.warn('%s.ass_type() is deprecated and slated for removal'
-                      'in astroid 2.0, use %s.assign_type() instead.'
-                      % (type(self).__name__, type(self).__name__),
-                      PendingDeprecationWarning, stacklevel=2)
-        return self.assign_type()
 
     def _get_filtered_stmts(self, lookup_node, node, stmts, mystmt):
         """method used in filter_stmts"""
@@ -2187,8 +2517,14 @@ class Comprehension(NodeNG):
 
         return stmts, False
 
+    def get_children(self):
+        yield self.target
+        yield self.iter
 
-class Const(NodeNG, bases.Instance):
+        yield from self.ifs
+
+
+class Const(mixins.NoChildrenMixin, NodeNG, bases.Instance):
     """Class representing any constant including num, str, bool, None, bytes.
 
     >>> node = astroid.extract_node('(5, "This is a string.", True, None, b"bytes")')
@@ -2201,7 +2537,8 @@ class Const(NodeNG, bases.Instance):
     <Const.NoneType l.1 at 0x7f23b2e359e8>,
     <Const.bytes l.1 at 0x7f23b2e35a20>]
     """
-    _other_fields = ('value',)
+
+    _other_fields = ("value",)
 
     def __init__(self, value, lineno=None, col_offset=None, parent=None):
         """
@@ -2224,7 +2561,18 @@ class Const(NodeNG, bases.Instance):
         :type: object
         """
 
-        super(Const, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
+
+    def __getattr__(self, name):
+        # This is needed because of Proxy's __getattr__ method.
+        # Calling object.__new__ on this class without calling
+        # __init__ would result in an infinite loop otherwise
+        # since __getattr__ is called when an attribute doesn't
+        # exist and self._proxied indirectly calls self.value
+        # and Proxy __getattr__ calls self.value
+        if name == "value":
+            raise AttributeError
+        return super().__getattr__(name)
 
     def getitem(self, index, context=None):
         """Get an item from this node if subscriptable.
@@ -2242,29 +2590,25 @@ class Const(NodeNG, bases.Instance):
 
         else:
             raise exceptions.AstroidTypeError(
-                'Could not use type {} as subscript index'.format(type(index))
+                "Could not use type {} as subscript index".format(type(index))
             )
 
         try:
-            if isinstance(self.value, six.string_types):
-                return Const(self.value[index_value])
-            if isinstance(self.value, bytes) and six.PY3:
-                # Bytes aren't instances of six.string_types
-                # on Python 3. Also, indexing them should return
-                # integers.
+            if isinstance(self.value, (str, bytes)):
                 return Const(self.value[index_value])
         except IndexError as exc:
-            util.reraise(exceptions.AstroidIndexError(
-                message='Index {index!r} out of range', error=exc,
-                node=self, index=index, context=context))
+            raise exceptions.AstroidIndexError(
+                message="Index {index!r} out of range",
+                node=self,
+                index=index,
+                context=context,
+            ) from exc
         except TypeError as exc:
-            util.reraise(exceptions.AstroidTypeError(
-                message='Type error {error!r}', error=exc,
-                node=self, index=index, context=context))
+            raise exceptions.AstroidTypeError(
+                message="Type error {error!r}", node=self, index=index, context=context
+            ) from exc
 
-        raise exceptions.AstroidTypeError(
-            '%r (value=%s)' % (self, self.value)
-        )
+        raise exceptions.AstroidTypeError("%r (value=%s)" % (self, self.value))
 
     def has_dynamic_getattr(self):
         """Check if the node has a custom __getattr__ or __getattribute__.
@@ -2280,13 +2624,13 @@ class Const(NodeNG, bases.Instance):
         """An iterator over the elements this node contains.
 
         :returns: The contents of this node.
-        :rtype: iterable(str)
+        :rtype: iterable(Const)
 
         :raises TypeError: If this node does not represent something that is iterable.
         """
-        if isinstance(self.value, six.string_types):
-            return self.value
-        raise TypeError()
+        if isinstance(self.value, str):
+            return [const_factory(elem) for elem in self.value]
+        raise TypeError("Cannot iterate over type {!r}".format(type(self.value)))
 
     def pytype(self):
         """Get the name of the type that this node represents.
@@ -2296,7 +2640,7 @@ class Const(NodeNG, bases.Instance):
         """
         return self._proxied.qname()
 
-    def bool_value(self):
+    def bool_value(self, context=None):
         """Determine the boolean value of this node.
 
         :returns: The boolean value of this node.
@@ -2305,7 +2649,7 @@ class Const(NodeNG, bases.Instance):
         return bool(self.value)
 
 
-class Continue(Statement):
+class Continue(mixins.NoChildrenMixin, Statement):
     """Class representing an :class:`ast.Continue` node.
 
     >>> node = astroid.extract_node('continue')
@@ -2330,7 +2674,8 @@ class Decorators(NodeNG):
     >>> list(node.get_children())[0]
     <Decorators l.1 at 0x7f23b2e35d68>
     """
-    _astroid_fields = ('nodes',)
+
+    _astroid_fields = ("nodes",)
     nodes = None
     """The decorators that this node contains.
 
@@ -2354,6 +2699,9 @@ class Decorators(NodeNG):
         # skip the function node to go directly to the upper level scope
         return self.parent.parent.scope()
 
+    def get_children(self):
+        yield from self.nodes
+
 
 class DelAttr(mixins.ParentAssignTypeMixin, NodeNG):
     """Variation of :class:`ast.Delete` representing deletion of an attribute.
@@ -2364,8 +2712,9 @@ class DelAttr(mixins.ParentAssignTypeMixin, NodeNG):
     >>> list(node.get_children())[0]
     <DelAttr.attr l.1 at 0x7f23b2e411d0>
     """
-    _astroid_fields = ('expr',)
-    _other_fields = ('attrname',)
+
+    _astroid_fields = ("expr",)
+    _other_fields = ("attrname",)
     expr = None
     """The name that this node represents.
 
@@ -2393,7 +2742,7 @@ class DelAttr(mixins.ParentAssignTypeMixin, NodeNG):
         :type: str or None
         """
 
-        super(DelAttr, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, expr=None):
         """Do some setup after initialisation.
@@ -2402,6 +2751,9 @@ class DelAttr(mixins.ParentAssignTypeMixin, NodeNG):
         :type expr: Name or None
         """
         self.expr = expr
+
+    def get_children(self):
+        yield self.expr
 
 
 class Delete(mixins.AssignTypeMixin, Statement):
@@ -2413,7 +2765,8 @@ class Delete(mixins.AssignTypeMixin, Statement):
     >>> node
     <Delete l.1 at 0x7f23b2e35f60>
     """
-    _astroid_fields = ('targets',)
+
+    _astroid_fields = ("targets",)
     targets = None
     """What is being deleted.
 
@@ -2428,6 +2781,9 @@ class Delete(mixins.AssignTypeMixin, Statement):
         """
         self.targets = targets
 
+    def get_children(self):
+        yield from self.targets
+
 
 class Dict(NodeNG, bases.Instance):
     """Class representing an :class:`ast.Dict` node.
@@ -2438,7 +2794,8 @@ class Dict(NodeNG, bases.Instance):
     >>> node
     <Dict.dict l.1 at 0x7f23b2e35cc0>
     """
-    _astroid_fields = ('items',)
+
+    _astroid_fields = ("items",)
 
     def __init__(self, lineno=None, col_offset=None, parent=None):
         """
@@ -2458,18 +2815,18 @@ class Dict(NodeNG, bases.Instance):
         :type: list(tuple(NodeNG, NodeNG))
         """
 
-        super(Dict, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, items):
         """Do some setup after initialisation.
 
-        :param items: The ley-value pairs contained in the dictionary.
+        :param items: The key-value pairs contained in the dictionary.
         :type items: list(tuple(NodeNG, NodeNG))
         """
         self.items = items
 
     @classmethod
-    def from_constants(cls, items=None):
+    def from_elements(cls, items=None):
         """Create a :class:`Dict` of constants from a live dictionary.
 
         :param items: The items to store in the node.
@@ -2482,8 +2839,12 @@ class Dict(NodeNG, bases.Instance):
         if items is None:
             node.items = []
         else:
-            node.items = [(const_factory(k), const_factory(v))
-                          for k, v in items.items()]
+            node.items = [
+                (const_factory(k), const_factory(v) if _is_const(v) else v)
+                for k, v in items.items()
+                # The keys need to be constants
+                if _is_const(k)
+            ]
         return node
 
     def pytype(self):
@@ -2492,7 +2853,7 @@ class Dict(NodeNG, bases.Instance):
         :returns: The name of the type.
         :rtype: str
         """
-        return '%s.dict' % BUILTINS
+        return "%s.dict" % BUILTINS
 
     def get_children(self):
         """Get the key and value nodes below this node.
@@ -2523,7 +2884,7 @@ class Dict(NodeNG, bases.Instance):
         :returns: The keys of this node.
         :rtype: iterable(NodeNG)
         """
-        return self.items[::2]
+        return [key for (key, _) in self.items]
 
     def getitem(self, index, context=None):
         """Get an item from this node.
@@ -2552,7 +2913,7 @@ class Dict(NodeNG, bases.Instance):
 
         raise exceptions.AstroidIndexError(index)
 
-    def bool_value(self):
+    def bool_value(self, context=None):
         """Determine the boolean value of this node.
 
         :returns: The boolean value of this node.
@@ -2573,7 +2934,8 @@ class Expr(Statement):
     >>> node.parent
     <Expr l.1 at 0x7f23b2e35278>
     """
-    _astroid_fields = ('value',)
+
+    _astroid_fields = ("value",)
     value = None
     """What the expression does.
 
@@ -2588,8 +2950,15 @@ class Expr(Statement):
         """
         self.value = value
 
+    def get_children(self):
+        yield self.value
 
-class Ellipsis(NodeNG): # pylint: disable=redefined-builtin
+    def _get_yield_nodes_skip_lambdas(self):
+        if not self.value.is_lambda:
+            yield from self.value._get_yield_nodes_skip_lambdas()
+
+
+class Ellipsis(mixins.NoChildrenMixin, NodeNG):  # pylint: disable=redefined-builtin
     """Class representing an :class:`ast.Ellipsis` node.
 
     An :class:`Ellipsis` is the ``...`` syntax.
@@ -2599,7 +2968,7 @@ class Ellipsis(NodeNG): # pylint: disable=redefined-builtin
     <Ellipsis l.1 at 0x7f23b2e35160>
     """
 
-    def bool_value(self):
+    def bool_value(self, context=None):
         """Determine the boolean value of this node.
 
         :returns: The boolean value of this node.
@@ -2609,13 +2978,13 @@ class Ellipsis(NodeNG): # pylint: disable=redefined-builtin
         return True
 
 
-class EmptyNode(NodeNG):
+class EmptyNode(mixins.NoChildrenMixin, NodeNG):
     """Holds an arbitrary object in the :attr:`LocalsDictNodeNG.locals`."""
 
     object = None
 
 
-class ExceptHandler(mixins.AssignTypeMixin, Statement):
+class ExceptHandler(mixins.MultiLineBlockMixin, mixins.AssignTypeMixin, Statement):
     """Class representing an :class:`ast.ExceptHandler`. node.
 
     An :class:`ExceptHandler` is an ``except`` block on a try-except.
@@ -2631,7 +3000,9 @@ class ExceptHandler(mixins.AssignTypeMixin, Statement):
     >>> >>> node.handlers
     [<ExceptHandler l.4 at 0x7f23b2e9e860>]
     """
-    _astroid_fields = ('type', 'name', 'body',)
+
+    _astroid_fields = ("type", "name", "body")
+    _multi_line_block_fields = ("body",)
     type = None
     """The types that the block handles.
 
@@ -2647,6 +3018,15 @@ class ExceptHandler(mixins.AssignTypeMixin, Statement):
 
     :type: list(NodeNG) or None
     """
+
+    def get_children(self):
+        if self.type is not None:
+            yield self.type
+
+        if self.name is not None:
+            yield self.name
+
+        yield from self.body
 
     # pylint: disable=redefined-builtin; had to use the same name as builtin ast module.
     def postinit(self, type=None, name=None, body=None):
@@ -2673,12 +3053,11 @@ class ExceptHandler(mixins.AssignTypeMixin, Statement):
         """
         if self.name:
             return self.name.tolineno
-        elif self.type:
+        if self.type:
             return self.type.tolineno
-
         return self.lineno
 
-    def catch(self, exceptions): # pylint: disable=redefined-outer-name
+    def catch(self, exceptions):  # pylint: disable=redefined-outer-name
         """Check if this node handles any of the given exceptions.
 
         If ``exceptions`` is empty, this will default to ``True``.
@@ -2688,7 +3067,7 @@ class ExceptHandler(mixins.AssignTypeMixin, Statement):
         """
         if self.type is None or exceptions is None:
             return True
-        for node in self.type.nodes_of_class(Name):
+        for node in self.type._get_name_nodes():
             if node.name in exceptions:
                 return True
         return False
@@ -2701,7 +3080,8 @@ class Exec(Statement):
     >>> node
     <Exec l.1 at 0x7f0e8106c6d0>
     """
-    _astroid_fields = ('expr', 'globals', 'locals',)
+
+    _astroid_fields = ("expr", "globals", "locals")
     expr = None
     """The expression to be executed.
 
@@ -2747,7 +3127,8 @@ class ExtSlice(NodeNG):
     >>> node.slice
     <ExtSlice l.1 at 0x7f23b7b05ef0>
     """
-    _astroid_fields = ('dims',)
+
+    _astroid_fields = ("dims",)
     dims = None
     """The simple dimensions that form the complete slice.
 
@@ -2763,14 +3144,22 @@ class ExtSlice(NodeNG):
         self.dims = dims
 
 
-class For(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
+class For(
+    mixins.MultiLineBlockMixin,
+    mixins.BlockRangeMixIn,
+    mixins.AssignTypeMixin,
+    Statement,
+):
     """Class representing an :class:`ast.For` node.
 
     >>> node = astroid.extract_node('for thing in things: print(thing)')
     >>> node
     <For l.1 at 0x7f23b2e8cf28>
     """
-    _astroid_fields = ('target', 'iter', 'body', 'orelse',)
+
+    _astroid_fields = ("target", "iter", "body", "orelse")
+    _other_other_fields = ("type_annotation",)
+    _multi_line_block_fields = ("body", "orelse")
     target = None
     """What the loop assigns to.
 
@@ -2791,9 +3180,16 @@ class For(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
 
     :type: list(NodeNG) or None
     """
+    type_annotation = None
+    """If present, this will contain the type annotation passed by a type comment
+
+    :type: NodeNG or None
+    """
 
     # pylint: disable=redefined-builtin; had to use the same name as builtin ast module.
-    def postinit(self, target=None, iter=None, body=None, orelse=None):
+    def postinit(
+        self, target=None, iter=None, body=None, orelse=None, type_annotation=None
+    ):
         """Do some setup after initialisation.
 
         :param target: What the loop assigns to.
@@ -2812,6 +3208,7 @@ class For(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
         self.iter = iter
         self.body = body
         self.orelse = orelse
+        self.type_annotation = type_annotation
 
     optional_assign = True
     """Whether this node optionally assigns a variable.
@@ -2828,6 +3225,13 @@ class For(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
         :type: int
         """
         return self.iter.tolineno
+
+    def get_children(self):
+        yield self.target
+        yield self.iter
+
+        yield from self.body
+        yield from self.orelse
 
 
 class AsyncFor(For):
@@ -2865,7 +3269,7 @@ class Await(NodeNG):
     <Await l.3 at 0x7f23b2e41a20>
     """
 
-    _astroid_fields = ('value', )
+    _astroid_fields = ("value",)
     value = None
     """What to wait for.
 
@@ -2880,18 +3284,23 @@ class Await(NodeNG):
         """
         self.value = value
 
+    def get_children(self):
+        yield self.value
 
-class ImportFrom(mixins.ImportFromMixin, Statement):
+
+class ImportFrom(mixins.NoChildrenMixin, mixins.ImportFromMixin, Statement):
     """Class representing an :class:`ast.ImportFrom` node.
 
     >>> node = astroid.extract_node('from my_package import my_module')
     >>> node
     <ImportFrom l.1 at 0x7f23b2e415c0>
     """
-    _other_fields = ('modname', 'names', 'level')
 
-    def __init__(self, fromname, names, level=0, lineno=None,
-                 col_offset=None, parent=None):
+    _other_fields = ("modname", "names", "level")
+
+    def __init__(
+        self, fromname, names, level=0, lineno=None, col_offset=None, parent=None
+    ):
         """
         :param fromname: The module that is being imported from.
         :type fromname: str or None
@@ -2938,13 +3347,14 @@ class ImportFrom(mixins.ImportFromMixin, Statement):
         :type: int
         """
 
-        super(ImportFrom, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
 
 class Attribute(NodeNG):
     """Class representing an :class:`ast.Attribute` node."""
-    _astroid_fields = ('expr',)
-    _other_fields = ('attrname',)
+
+    _astroid_fields = ("expr",)
+    _other_fields = ("attrname",)
     expr = None
     """The name that this node represents.
 
@@ -2972,7 +3382,7 @@ class Attribute(NodeNG):
         :type: str or None
         """
 
-        super(Attribute, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, expr=None):
         """Do some setup after initialisation.
@@ -2982,15 +3392,19 @@ class Attribute(NodeNG):
         """
         self.expr = expr
 
+    def get_children(self):
+        yield self.expr
 
-class Global(Statement):
+
+class Global(mixins.NoChildrenMixin, Statement):
     """Class representing an :class:`ast.Global` node.
 
     >>> node = astroid.extract_node('global a_global')
     >>> node
     <Global l.1 at 0x7f23b2e9de10>
     """
-    _other_fields = ('names',)
+
+    _other_fields = ("names",)
 
     def __init__(self, names, lineno=None, col_offset=None, parent=None):
         """
@@ -3013,20 +3427,22 @@ class Global(Statement):
         :type: list(str)
         """
 
-        super(Global, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def _infer_name(self, frame, name):
         return name
 
 
-class If(mixins.BlockRangeMixIn, Statement):
+class If(mixins.MultiLineBlockMixin, mixins.BlockRangeMixIn, Statement):
     """Class representing an :class:`ast.If` node.
 
     >>> node = astroid.extract_node('if condition: print(True)')
     >>> node
     <If l.1 at 0x7f23b2e9dd30>
     """
-    _astroid_fields = ('test', 'body', 'orelse')
+
+    _astroid_fields = ("test", "body", "orelse")
+    _multi_line_block_fields = ("body", "orelse")
     test = None
     """The condition that the statement tests.
 
@@ -3081,8 +3497,16 @@ class If(mixins.BlockRangeMixIn, Statement):
             return lineno, lineno
         if lineno <= self.body[-1].tolineno:
             return lineno, self.body[-1].tolineno
-        return self._elsed_block_range(lineno, self.orelse,
-                                       self.body[0].fromlineno - 1)
+        return self._elsed_block_range(lineno, self.orelse, self.body[0].fromlineno - 1)
+
+    def get_children(self):
+        yield self.test
+
+        yield from self.body
+        yield from self.orelse
+
+    def has_elif_block(self):
+        return len(self.orelse) == 1 and isinstance(self.orelse[0], If)
 
 
 class IfExp(NodeNG):
@@ -3092,7 +3516,8 @@ class IfExp(NodeNG):
     >>> node
     <IfExp l.1 at 0x7f23b2e9dbe0>
     """
-    _astroid_fields = ('test', 'body', 'orelse')
+
+    _astroid_fields = ("test", "body", "orelse")
     test = None
     """The condition that the statement tests.
 
@@ -3125,14 +3550,26 @@ class IfExp(NodeNG):
         self.body = body
         self.orelse = orelse
 
-class Import(mixins.ImportFromMixin, Statement):
+    def get_children(self):
+        yield self.test
+        yield self.body
+        yield self.orelse
+
+    def op_left_associative(self):
+        # `1 if True else 2 if False else 3` is parsed as
+        # `1 if True else (2 if False else 3)`
+        return False
+
+
+class Import(mixins.NoChildrenMixin, mixins.ImportFromMixin, Statement):
     """Class representing an :class:`ast.Import` node.
 
     >>> node = astroid.extract_node('import astroid')
     >>> node
     <Import l.1 at 0x7f23b2e4e5c0>
     """
-    _other_fields = ('names',)
+
+    _other_fields = ("names",)
 
     def __init__(self, names=None, lineno=None, col_offset=None, parent=None):
         """
@@ -3158,7 +3595,7 @@ class Import(mixins.ImportFromMixin, Statement):
         :type: list(tuple(str, str or None)) or None
         """
 
-        super(Import, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
 
 class Index(NodeNG):
@@ -3172,7 +3609,8 @@ class Index(NodeNG):
     >>> node.slice
     <Index l.1 at 0x7f23b2e9e6a0>
     """
-    _astroid_fields = ('value',)
+
+    _astroid_fields = ("value",)
     value = None
     """The value to subscript with.
 
@@ -3187,6 +3625,9 @@ class Index(NodeNG):
         """
         self.value = value
 
+    def get_children(self):
+        yield self.value
+
 
 class Keyword(NodeNG):
     """Class representing an :class:`ast.keyword` node.
@@ -3197,8 +3638,9 @@ class Keyword(NodeNG):
     >>> node.keywords
     [<Keyword l.1 at 0x7f23b2e9e9b0>]
     """
-    _astroid_fields = ('value',)
-    _other_fields = ('arg',)
+
+    _astroid_fields = ("value",)
+    _other_fields = ("arg",)
     value = None
     """The value being assigned to the keyword argument.
 
@@ -3226,7 +3668,7 @@ class Keyword(NodeNG):
         :type: Name or None
         """
 
-        super(Keyword, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, value=None):
         """Do some setup after initialisation.
@@ -3236,6 +3678,9 @@ class Keyword(NodeNG):
         """
         self.value = value
 
+    def get_children(self):
+        yield self.value
+
 
 class List(_BaseContainer):
     """Class representing an :class:`ast.List` node.
@@ -3244,10 +3689,10 @@ class List(_BaseContainer):
     >>> node
     <List.list l.1 at 0x7f23b2e9e128>
     """
-    _other_fields = ('ctx',)
 
-    def __init__(self, ctx=None, lineno=None,
-                 col_offset=None, parent=None):
+    _other_fields = ("ctx",)
+
+    def __init__(self, ctx=None, lineno=None, col_offset=None, parent=None):
         """
         :param ctx: Whether the list is assigned to or loaded from.
         :type ctx: Context or None
@@ -3268,7 +3713,7 @@ class List(_BaseContainer):
         :type: Context or None
         """
 
-        super(List, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def pytype(self):
         """Get the name of the type that this node represents.
@@ -3276,7 +3721,7 @@ class List(_BaseContainer):
         :returns: The name of the type.
         :rtype: str
         """
-        return '%s.list' % BUILTINS
+        return "%s.list" % BUILTINS
 
     def getitem(self, index, context=None):
         """Get an item from this node.
@@ -3287,7 +3732,7 @@ class List(_BaseContainer):
         return _container_getitem(self, self.elts, index, context=context)
 
 
-class Nonlocal(Statement):
+class Nonlocal(mixins.NoChildrenMixin, Statement):
     """Class representing an :class:`ast.Nonlocal` node.
 
     >>> node = astroid.extract_node('''
@@ -3299,11 +3744,12 @@ class Nonlocal(Statement):
     >>> node.body[0]
     <Nonlocal l.3 at 0x7f23b2e9e908>
     """
-    _other_fields = ('names',)
+
+    _other_fields = ("names",)
 
     def __init__(self, names, lineno=None, col_offset=None, parent=None):
         """
-        :param names: The names being decalred as not local.
+        :param names: The names being declared as not local.
         :type names: list(str)
 
         :param lineno: The line that this node appears on in the source code.
@@ -3322,13 +3768,13 @@ class Nonlocal(Statement):
         :type: list(str)
         """
 
-        super(Nonlocal, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def _infer_name(self, frame, name):
         return name
 
 
-class Pass(Statement):
+class Pass(mixins.NoChildrenMixin, Statement):
     """Class representing an :class:`ast.Pass` node.
 
     >>> node = astroid.extract_node('pass')
@@ -3344,7 +3790,8 @@ class Print(Statement):
     >>> node
     <Print l.1 at 0x7f0e8101d290>
     """
-    _astroid_fields = ('dest', 'values',)
+
+    _astroid_fields = ("dest", "values")
     dest = None
     """Where to print to.
 
@@ -3377,7 +3824,7 @@ class Print(Statement):
         :type: bool or None
         """
 
-        super(Print, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, dest=None, values=None):
         """Do some setup after initialisation.
@@ -3399,58 +3846,30 @@ class Raise(Statement):
     >>> node
     <Raise l.1 at 0x7f23b2e9e828>
     """
+
     exc = None
     """What is being raised.
 
     :type: NodeNG or None
     """
-    if six.PY2:
-        _astroid_fields = ('exc', 'inst', 'tback')
-        inst = None
-        """The "value" of the exception being raised.
+    _astroid_fields = ("exc", "cause")
+    cause = None
+    """The exception being used to raise this one.
 
-        :type: NodeNG or None
+    :type: NodeNG or None
+    """
+
+    def postinit(self, exc=None, cause=None):
+        """Do some setup after initialisation.
+
+        :param exc: What is being raised.
+        :type exc: NodeNG or None
+
+        :param cause: The exception being used to raise this one.
+        :type cause: NodeNG or None
         """
-        tback = None
-        """The traceback object to raise with.
-
-        :type: NodeNG or None
-        """
-
-        def postinit(self, exc=None, inst=None, tback=None):
-            """Do some setup after initialisation.
-
-            :param exc: What is being raised.
-            :type exc: NodeNG or None
-
-            :param inst: The "value" of the exception being raised.
-            :type inst: NodeNG or None
-
-            :param tback: The traceback object to raise with.
-            :type tback: NodeNG or None
-            """
-            self.exc = exc
-            self.inst = inst
-            self.tback = tback
-    else:
-        _astroid_fields = ('exc', 'cause')
-        cause = None
-        """The exception being used to raise this one.
-
-        :type: NodeNG or None
-        """
-
-        def postinit(self, exc=None, cause=None):
-            """Do some setup after initialisation.
-
-            :param exc: What is being raised.
-            :type exc: NodeNG or None
-
-            :param cause: The exception being used to raise this one.
-            :type cause: NodeNG or None
-            """
-            self.exc = exc
-            self.cause = cause
+        self.exc = exc
+        self.cause = cause
 
     def raises_not_implemented(self):
         """Check if this node raises a :class:`NotImplementedError`.
@@ -3461,10 +3880,17 @@ class Raise(Statement):
         """
         if not self.exc:
             return False
-        for name in self.exc.nodes_of_class(Name):
-            if name.name == 'NotImplementedError':
+        for name in self.exc._get_name_nodes():
+            if name.name == "NotImplementedError":
                 return True
         return False
+
+    def get_children(self):
+        if self.exc is not None:
+            yield self.exc
+
+        if self.cause is not None:
+            yield self.cause
 
 
 class Return(Statement):
@@ -3474,7 +3900,8 @@ class Return(Statement):
     >>> node
     <Return l.1 at 0x7f23b8211908>
     """
-    _astroid_fields = ('value',)
+
+    _astroid_fields = ("value",)
     value = None
     """The value being returned.
 
@@ -3488,6 +3915,16 @@ class Return(Statement):
         :type value: NodeNG or None
         """
         self.value = value
+
+    def get_children(self):
+        if self.value is not None:
+            yield self.value
+
+    def is_tuple_return(self):
+        return isinstance(self.value, Tuple)
+
+    def _get_return_nodes_skip_functions(self):
+        yield self
 
 
 class Set(_BaseContainer):
@@ -3504,7 +3941,7 @@ class Set(_BaseContainer):
         :returns: The name of the type.
         :rtype: str
         """
-        return '%s.set' % BUILTINS
+        return "%s.set" % BUILTINS
 
 
 class Slice(NodeNG):
@@ -3516,7 +3953,8 @@ class Slice(NodeNG):
     >>> node.slice
     <Slice l.1 at 0x7f23b2e71e80>
     """
-    _astroid_fields = ('lower', 'upper', 'step')
+
+    _astroid_fields = ("lower", "upper", "step")
     lower = None
     """The lower index in the slice.
 
@@ -3559,8 +3997,8 @@ class Slice(NodeNG):
 
     @decorators.cachedproperty
     def _proxied(self):
-        builtins = MANAGER.astroid_cache[BUILTINS]
-        return builtins.getattr('slice')[0]
+        builtins = MANAGER.builtins_module
+        return builtins.getattr("slice")[0]
 
     def pytype(self):
         """Get the name of the type that this node represents.
@@ -3568,7 +4006,7 @@ class Slice(NodeNG):
         :returns: The name of the type.
         :rtype: str
         """
-        return '%s.slice' % BUILTINS
+        return "%s.slice" % BUILTINS
 
     def igetattr(self, attrname, context=None):
         """Infer the possible values of the given attribute on the slice.
@@ -3579,18 +4017,27 @@ class Slice(NodeNG):
         :returns: The inferred possible values.
         :rtype: iterable(NodeNG)
         """
-        if attrname == 'start':
+        if attrname == "start":
             yield self._wrap_attribute(self.lower)
-        elif attrname == 'stop':
+        elif attrname == "stop":
             yield self._wrap_attribute(self.upper)
-        elif attrname == 'step':
+        elif attrname == "step":
             yield self._wrap_attribute(self.step)
         else:
-            for value in self.getattr(attrname, context=context):
-                yield value
+            yield from self.getattr(attrname, context=context)
 
     def getattr(self, attrname, context=None):
         return self._proxied.getattr(attrname, context)
+
+    def get_children(self):
+        if self.lower is not None:
+            yield self.lower
+
+        if self.upper is not None:
+            yield self.upper
+
+        if self.step is not None:
+            yield self.step
 
 
 class Starred(mixins.ParentAssignTypeMixin, NodeNG):
@@ -3600,8 +4047,9 @@ class Starred(mixins.ParentAssignTypeMixin, NodeNG):
     >>> node
     <Starred l.1 at 0x7f23b2e41978>
     """
-    _astroid_fields = ('value',)
-    _other_fields = ('ctx', )
+
+    _astroid_fields = ("value",)
+    _other_fields = ("ctx",)
     value = None
     """What is being unpacked.
 
@@ -3629,8 +4077,7 @@ class Starred(mixins.ParentAssignTypeMixin, NodeNG):
         :type: Context or None
         """
 
-        super(Starred, self).__init__(lineno=lineno,
-                                      col_offset=col_offset, parent=parent)
+        super().__init__(lineno=lineno, col_offset=col_offset, parent=parent)
 
     def postinit(self, value=None):
         """Do some setup after initialisation.
@@ -3640,6 +4087,9 @@ class Starred(mixins.ParentAssignTypeMixin, NodeNG):
         """
         self.value = value
 
+    def get_children(self):
+        yield self.value
+
 
 class Subscript(NodeNG):
     """Class representing an :class:`ast.Subscript` node.
@@ -3648,8 +4098,9 @@ class Subscript(NodeNG):
     >>> node
     <Subscript l.1 at 0x7f23b2e71f60>
     """
-    _astroid_fields = ('value', 'slice')
-    _other_fields = ('ctx', )
+
+    _astroid_fields = ("value", "slice")
+    _other_fields = ("ctx",)
     value = None
     """What is being indexed.
 
@@ -3682,8 +4133,7 @@ class Subscript(NodeNG):
         :type: Context or None
         """
 
-        super(Subscript, self).__init__(lineno=lineno,
-                                        col_offset=col_offset, parent=parent)
+        super().__init__(lineno=lineno, col_offset=col_offset, parent=parent)
 
     # pylint: disable=redefined-builtin; had to use the same name as builtin ast module.
     def postinit(self, value=None, slice=None):
@@ -3698,8 +4148,12 @@ class Subscript(NodeNG):
         self.value = value
         self.slice = slice
 
+    def get_children(self):
+        yield self.value
+        yield self.slice
 
-class TryExcept(mixins.BlockRangeMixIn, Statement):
+
+class TryExcept(mixins.MultiLineBlockMixin, mixins.BlockRangeMixIn, Statement):
     """Class representing an :class:`ast.TryExcept` node.
 
     >>> node = astroid.extract_node('''
@@ -3711,7 +4165,9 @@ class TryExcept(mixins.BlockRangeMixIn, Statement):
     >>> node
     <TryExcept l.2 at 0x7f23b2e9d908>
     """
-    _astroid_fields = ('body', 'handlers', 'orelse',)
+
+    _astroid_fields = ("body", "handlers", "orelse")
+    _multi_line_block_fields = ("body", "handlers", "orelse")
     body = None
     """The contents of the block to catch exceptions from.
 
@@ -3767,8 +4223,14 @@ class TryExcept(mixins.BlockRangeMixIn, Statement):
                 last = exhandler.body[0].fromlineno - 1
         return self._elsed_block_range(lineno, self.orelse, last)
 
+    def get_children(self):
+        yield from self.body
 
-class TryFinally(mixins.BlockRangeMixIn, Statement):
+        yield from self.handlers or ()
+        yield from self.orelse or ()
+
+
+class TryFinally(mixins.MultiLineBlockMixin, mixins.BlockRangeMixIn, Statement):
     """Class representing an :class:`ast.TryFinally` node.
 
     >>> node = astroid.extract_node('''
@@ -3782,7 +4244,9 @@ class TryFinally(mixins.BlockRangeMixIn, Statement):
     >>> node
     <TryFinally l.2 at 0x7f23b2e41d68>
     """
-    _astroid_fields = ('body', 'finalbody',)
+
+    _astroid_fields = ("body", "finalbody")
+    _multi_line_block_fields = ("body", "finalbody")
     body = None
     """The try-except that the finally is attached to.
 
@@ -3818,10 +4282,17 @@ class TryFinally(mixins.BlockRangeMixIn, Statement):
         """
         child = self.body[0]
         # py2.5 try: except: finally:
-        if (isinstance(child, TryExcept) and child.fromlineno == self.fromlineno
-                and lineno > self.fromlineno and lineno <= child.tolineno):
+        if (
+            isinstance(child, TryExcept)
+            and child.fromlineno == self.fromlineno
+            and child.tolineno >= lineno > self.fromlineno
+        ):
             return child.block_range(lineno)
         return self._elsed_block_range(lineno, self.finalbody)
+
+    def get_children(self):
+        yield from self.body
+        yield from self.finalbody
 
 
 class Tuple(_BaseContainer):
@@ -3832,10 +4303,9 @@ class Tuple(_BaseContainer):
     <Tuple.tuple l.1 at 0x7f23b2e41780>
     """
 
-    _other_fields = ('ctx',)
+    _other_fields = ("ctx",)
 
-    def __init__(self, ctx=None, lineno=None,
-                 col_offset=None, parent=None):
+    def __init__(self, ctx=None, lineno=None, col_offset=None, parent=None):
         """
         :param ctx: Whether the tuple is assigned to or loaded from.
         :type ctx: Context or None
@@ -3856,7 +4326,7 @@ class Tuple(_BaseContainer):
         :type: Context or None
         """
 
-        super(Tuple, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def pytype(self):
         """Get the name of the type that this node represents.
@@ -3864,7 +4334,7 @@ class Tuple(_BaseContainer):
         :returns: The name of the type.
         :rtype: str
         """
-        return '%s.tuple' % BUILTINS
+        return "%s.tuple" % BUILTINS
 
     def getitem(self, index, context=None):
         """Get an item from this node.
@@ -3882,8 +4352,9 @@ class UnaryOp(NodeNG):
     >>> node
     <UnaryOp l.1 at 0x7f23b2e4e198>
     """
-    _astroid_fields = ('operand',)
-    _other_fields = ('op',)
+
+    _astroid_fields = ("operand",)
+    _other_fields = ("op",)
     operand = None
     """What the unary operator is applied to.
 
@@ -3911,7 +4382,7 @@ class UnaryOp(NodeNG):
         :type: str or None
         """
 
-        super(UnaryOp, self).__init__(lineno, col_offset, parent)
+        super().__init__(lineno, col_offset, parent)
 
     def postinit(self, operand=None):
         """Do some setup after initialisation.
@@ -3936,13 +4407,25 @@ class UnaryOp(NodeNG):
         """
         try:
             results = self._infer_unaryop(context=context)
-            return [result for result in results
-                    if isinstance(result, util.BadUnaryOperationMessage)]
+            return [
+                result
+                for result in results
+                if isinstance(result, util.BadUnaryOperationMessage)
+            ]
         except exceptions.InferenceError:
             return []
 
+    def get_children(self):
+        yield self.operand
 
-class While(mixins.BlockRangeMixIn, Statement):
+    def op_precedence(self):
+        if self.op == "not":
+            return OP_PRECEDENCE[self.op]
+
+        return super().op_precedence()
+
+
+class While(mixins.MultiLineBlockMixin, mixins.BlockRangeMixIn, Statement):
     """Class representing an :class:`ast.While` node.
 
     >>> node = astroid.extract_node('''
@@ -3952,7 +4435,9 @@ class While(mixins.BlockRangeMixIn, Statement):
     >>> node
     <While l.2 at 0x7f23b2e4e390>
     """
-    _astroid_fields = ('test', 'body', 'orelse',)
+
+    _astroid_fields = ("test", "body", "orelse")
+    _multi_line_block_fields = ("body", "orelse")
     test = None
     """The condition that the loop tests.
 
@@ -4003,10 +4488,26 @@ class While(mixins.BlockRangeMixIn, Statement):
             starting at the given line number.
         :rtype: tuple(int, int)
         """
-        return self. _elsed_block_range(lineno, self.orelse)
+        return self._elsed_block_range(lineno, self.orelse)
+
+    def get_children(self):
+        yield self.test
+
+        yield from self.body
+        yield from self.orelse
+
+    def _get_yield_nodes_skip_lambdas(self):
+        """A While node can contain a Yield node in the test"""
+        yield from self.test._get_yield_nodes_skip_lambdas()
+        yield from super()._get_yield_nodes_skip_lambdas()
 
 
-class With(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
+class With(
+    mixins.MultiLineBlockMixin,
+    mixins.BlockRangeMixIn,
+    mixins.AssignTypeMixin,
+    Statement,
+):
     """Class representing an :class:`ast.With` node.
 
     >>> node = astroid.extract_node('''
@@ -4016,7 +4517,10 @@ class With(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
     >>> node
     <With l.2 at 0x7f23b2e4e710>
     """
-    _astroid_fields = ('items', 'body')
+
+    _astroid_fields = ("items", "body")
+    _other_other_fields = ("type_annotation",)
+    _multi_line_block_fields = ("body",)
     items = None
     """The pairs of context managers and the names they are assigned to.
 
@@ -4027,8 +4531,13 @@ class With(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
 
     :type: list(NodeNG) or None
     """
+    type_annotation = None
+    """If present, this will contain the type annotation passed by a type comment
 
-    def postinit(self, items=None, body=None):
+    :type: NodeNG or None
+    """
+
+    def postinit(self, items=None, body=None, type_annotation=None):
         """Do some setup after initialisation.
 
         :param items: The pairs of context managers and the names
@@ -4040,6 +4549,7 @@ class With(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
         """
         self.items = items
         self.body = body
+        self.type_annotation = type_annotation
 
     @decorators.cachedproperty
     def blockstart_tolineno(self):
@@ -4059,8 +4569,7 @@ class With(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
             yield expr
             if var:
                 yield var
-        for elt in self.body:
-            yield elt
+        yield from self.body
 
 
 class AsyncWith(With):
@@ -4074,7 +4583,8 @@ class Yield(NodeNG):
     >>> node
     <Yield l.1 at 0x7f23b2e4e5f8>
     """
-    _astroid_fields = ('value',)
+
+    _astroid_fields = ("value",)
     value = None
     """The value to yield.
 
@@ -4089,12 +4599,19 @@ class Yield(NodeNG):
         """
         self.value = value
 
+    def get_children(self):
+        if self.value is not None:
+            yield self.value
+
+    def _get_yield_nodes_skip_lambdas(self):
+        yield self
+
 
 class YieldFrom(Yield):
     """Class representing an :class:`ast.YieldFrom` node."""
 
 
-class DictUnpack(NodeNG):
+class DictUnpack(mixins.NoChildrenMixin, NodeNG):
     """Represents the unpacking of dicts into dicts using :pep:`448`."""
 
 
@@ -4109,7 +4626,8 @@ class FormattedValue(NodeNG):
     >>> node.values
     [<Const.str l.1 at 0x7f23b2e4eda0>, <FormattedValue l.1 at 0x7f23b2e4edd8>]
     """
-    _astroid_fields = ('value', 'format_spec')
+
+    _astroid_fields = ("value", "format_spec")
     value = None
     """The value to be formatted into the string.
 
@@ -4148,6 +4666,12 @@ class FormattedValue(NodeNG):
         self.conversion = conversion
         self.format_spec = format_spec
 
+    def get_children(self):
+        yield self.value
+
+        if self.format_spec is not None:
+            yield self.format_spec
+
 
 class JoinedStr(NodeNG):
     """Represents a list of string expressions to be joined.
@@ -4156,7 +4680,8 @@ class JoinedStr(NodeNG):
     >>> node
     <JoinedStr l.1 at 0x7f23b2e4ed30>
     """
-    _astroid_fields = ('values',)
+
+    _astroid_fields = ("values",)
     values = None
     """The string expressions to be joined.
 
@@ -4172,6 +4697,34 @@ class JoinedStr(NodeNG):
         """
         self.values = values
 
+    def get_children(self):
+        yield from self.values
+
+
+class NamedExpr(mixins.AssignTypeMixin, NodeNG):
+    """Represents the assignment from the assignment expression
+
+    >>> module = astroid.parse('if a := 1: pass')
+    >>> module.body[0].test
+    <NamedExpr l.1 at 0x7f23b2e4ed30>
+    """
+
+    _astroid_fields = ("target", "value")
+    target = None
+    """The assignment target
+
+    :type: Name
+    """
+    value = None
+    """The value that gets assigned in the expression
+
+    :type: NodeNG
+    """
+
+    def postinit(self, target, value):
+        self.target = target
+        self.value = value
+
 
 class Unknown(mixins.AssignTypeMixin, NodeNG):
     """This node represents a node in a constructed AST where
@@ -4179,9 +4732,51 @@ class Unknown(mixins.AssignTypeMixin, NodeNG):
     the args attribute of FunctionDef nodes where function signature
     introspection failed.
     """
+
+    name = "Unknown"
+
+    def qname(self):
+        return "Unknown"
+
     def infer(self, context=None, **kwargs):
         """Inference on an Unknown node immediately terminates."""
         yield util.Uninferable
+
+
+class EvaluatedObject(NodeNG):
+    """Contains an object that has already been inferred
+
+    This class is useful to pre-evaluate a particular node,
+    with the resulting class acting as the non-evaluated node.
+    """
+
+    name = "EvaluatedObject"
+    _astroid_fields = ("original",)
+    _other_fields = ("value",)
+
+    original = None
+    """The original node that has already been evaluated
+
+    :type: NodeNG
+    """
+
+    value = None
+    """The inferred value
+
+    :type: Union[Uninferable, NodeNG]
+    """
+
+    def __init__(self, original, value):
+        self.original = original
+        self.value = value
+        super().__init__(
+            lineno=self.original.lineno,
+            col_offset=self.original.col_offset,
+            parent=self.original.parent,
+        )
+
+    def infer(self, context=None, **kwargs):
+        yield self.value
 
 
 # constants ##############################################################
@@ -4193,17 +4788,18 @@ CONST_CLS = {
     set: Set,
     type(None): Const,
     type(NotImplemented): Const,
-    }
+}
+if PY38:
+    CONST_CLS[type(...)] = Const
+
 
 def _update_const_classes():
     """update constant classes, so the keys of CONST_CLS can be reused"""
-    klasses = (bool, int, float, complex, str)
-    if six.PY2:
-        # pylint: disable=undefined-variable
-        klasses += (unicode, long)
-    klasses += (bytes,)
+    klasses = (bool, int, float, complex, str, bytes)
     for kls in klasses:
         CONST_CLS[kls] = Const
+
+
 _update_const_classes()
 
 
@@ -4224,7 +4820,7 @@ _CONST_CLS_CONSTRUCTORS = {
     Tuple: _two_step_initialization,
     Dict: _dict_initialization,
     Set: _two_step_initialization,
-    Const: lambda cls, value: cls(value)
+    Const: lambda cls, value: cls(value),
 }
 
 
@@ -4256,12 +4852,11 @@ def const_factory(value):
         return node
 
 
-# Backward-compatibility aliases
-
-Backquote = util.proxy_alias('Backquote', Repr)
-Discard = util.proxy_alias('Discard', Expr)
-AssName = util.proxy_alias('AssName', AssignName)
-AssAttr = util.proxy_alias('AssAttr', AssignAttr)
-Getattr = util.proxy_alias('Getattr', Attribute)
-CallFunc = util.proxy_alias('CallFunc', Call)
-From = util.proxy_alias('From', ImportFrom)
+def is_from_decorator(node):
+    """Return True if the given node is the child of a decorator"""
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, Decorators):
+            return True
+        parent = parent.parent
+    return False

@@ -89,13 +89,13 @@ class Proxy(with_metaclass(_ProxyMetaType)):
 
     def __repr__(self, __getattr__=object.__getattribute__):
         if '__wrapped__' in self.__dict__:
-            return '<%s at 0x%x wrapping %r at 0x%x with factory %r>' % (
+            return '<{} at 0x{:x} wrapping {!r} at 0x{:x} with factory {!r}>'.format(
                 type(self).__name__, id(self),
                 self.__wrapped__, id(self.__wrapped__),
                 self.__factory__
             )
         else:
-            return '<%s at 0x%x with factory %r>' % (
+            return '<{} at 0x{:x} with factory {!r}>'.format(
                 type(self).__name__, id(self),
                 self.__factory__
             )
@@ -211,7 +211,7 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     __int__ = make_proxy_method(int)
 
     if PY2:
-        __long__ = make_proxy_method(long)  # flake8: noqa
+        __long__ = make_proxy_method(long)  # noqa
 
     __float__ = make_proxy_method(float)
     __oct__ = make_proxy_method(oct)

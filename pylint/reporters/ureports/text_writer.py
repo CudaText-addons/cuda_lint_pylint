@@ -1,24 +1,26 @@
-# Copyright (c) 2015-2016 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2015-2016, 2018-2019 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2018, 2020 Anthony Sottile <asottile@umich.edu>
+# Copyright (c) 2019 Hugo van Kemenade <hugovk@users.noreply.github.com>
+# Copyright (c) 2019 Pierre Sassoulas <pierre.sassoulas@gmail.com>
 
 # Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 # For details: https://github.com/PyCQA/pylint/blob/master/COPYING
 
 """Text formatting drivers for ureports"""
 
-from __future__ import print_function
-
 from pylint.reporters.ureports import BaseWriter
 
+TITLE_UNDERLINES = ["", "=", "-", "`", ".", "~", "^"]
+BULLETS = ["*", "-"]
 
-TITLE_UNDERLINES = [u'', u'=', u'-', u'`', u'.', u'~', u'^']
-BULLETS = [u'*', u'-']
 
 class TextWriter(BaseWriter):
     """format layouts as text
     (ReStructured inspiration but not totally handled yet)
     """
+
     def begin_format(self):
-        super(TextWriter, self).begin_format()
+        super().begin_format()
         self.list_level = 0
 
     def visit_section(self, layout):
@@ -38,7 +40,7 @@ class TextWriter(BaseWriter):
         self.writeln()
 
     def visit_title(self, layout):
-        title = u''.join(list(self.compute_content(layout)))
+        title = "".join(list(self.compute_content(layout)))
         self.writeln(title)
         try:
             self.writeln(TITLE_UNDERLINES[self.section] * len(title))
@@ -54,7 +56,7 @@ class TextWriter(BaseWriter):
         """display a table as text"""
         table_content = self.get_table_content(layout)
         # get columns width
-        cols_width = [0]*len(table_content[0])
+        cols_width = [0] * len(table_content[0])
         for row in table_content:
             for index, col in enumerate(row):
                 cols_width[index] = max(cols_width[index], len(col))
@@ -63,19 +65,19 @@ class TextWriter(BaseWriter):
 
     def default_table(self, layout, table_content, cols_width):
         """format a table"""
-        cols_width = [size+1 for size in cols_width]
-        format_strings = u' '.join([u'%%-%ss'] * len(cols_width))
+        cols_width = [size + 1 for size in cols_width]
+        format_strings = " ".join(["%%-%ss"] * len(cols_width))
         format_strings = format_strings % tuple(cols_width)
-        format_strings = format_strings.split(u' ')
-        table_linesep = u'\n+' + u'+'.join([u'-'*w for w in cols_width]) + u'+\n'
-        headsep = u'\n+' + u'+'.join([u'='*w for w in cols_width]) + u'+\n'
-        # FIXME: layout.cheaders
+        format_strings = format_strings.split(" ")
+        table_linesep = "\n+" + "+".join(["-" * w for w in cols_width]) + "+\n"
+        headsep = "\n+" + "+".join(["=" * w for w in cols_width]) + "+\n"
+
         self.write(table_linesep)
         for index, line in enumerate(table_content):
-            self.write(u'|')
+            self.write("|")
             for line_index, at_index in enumerate(line):
                 self.write(format_strings[line_index] % at_index)
-                self.write(u'|')
+                self.write("|")
             if index == 0 and layout.rheaders:
                 self.write(headsep)
             else:
@@ -84,11 +86,11 @@ class TextWriter(BaseWriter):
     def visit_verbatimtext(self, layout):
         """display a verbatim layout as text (so difficult ;)
         """
-        self.writeln(u'::\n')
+        self.writeln("::\n")
         for line in layout.data.splitlines():
-            self.writeln(u'    ' + line)
+            self.writeln("    " + line)
         self.writeln()
 
     def visit_text(self, layout):
         """add some text"""
-        self.write(u'%s' % layout.data)
+        self.write("%s" % layout.data)

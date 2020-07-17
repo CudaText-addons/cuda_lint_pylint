@@ -1,8 +1,10 @@
 # Copyright (c) 2006, 2008-2010, 2012-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
-# Copyright (c) 2014-2016 Claudiu Popa <pcmanticore@gmail.com>
+# Copyright (c) 2014-2018 Claudiu Popa <pcmanticore@gmail.com>
 # Copyright (c) 2014 Brett Cannon <brett@python.org>
 # Copyright (c) 2014 Arun Persaud <arun@nubati.net>
 # Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
+# Copyright (c) 2018 ssolanki <sushobhitsolanki@gmail.com>
+# Copyright (c) 2019 Pierre Sassoulas <pierre.sassoulas@gmail.com>
 
 # Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 # For details: https://github.com/PyCQA/pylint/blob/master/COPYING
@@ -11,17 +13,19 @@
 """
 
 import astroid
-from pylint.pyreverse.utils import is_interface, FilterMixIn
+
 from pylint.checkers.utils import decorated_with_property
+from pylint.pyreverse.utils import FilterMixIn, is_interface
 
 
-class Figure(object):
+class Figure:
     """base class for counter handling"""
 
 
 class Relationship(Figure):
     """a relation ship from an object in the diagram to another
     """
+
     def __init__(self, from_object, to_object, relation_type, name=None):
         Figure.__init__(self)
         self.from_object = from_object
@@ -33,7 +37,8 @@ class Relationship(Figure):
 class DiagramEntity(Figure):
     """a diagram object, i.e. a label associated to an astroid node
     """
-    def __init__(self, title='No name', node=None):
+
+    def __init__(self, title="No name", node=None):
         Figure.__init__(self)
         self.title = title
         self.node = node
@@ -42,7 +47,9 @@ class DiagramEntity(Figure):
 class ClassDiagram(Figure, FilterMixIn):
     """main class diagram handling
     """
-    TYPE = 'class'
+
+    TYPE = "class"
+
     def __init__(self, title, mode):
         FilterMixIn.__init__(self, mode)
         Figure.__init__(self)
@@ -54,11 +61,12 @@ class ClassDiagram(Figure, FilterMixIn):
 
     def get_relationships(self, role):
         # sorted to get predictable (hence testable) results
-        return sorted(self.relationships.get(role, ()),
-                      key=lambda x: (x.from_object.fig_id, x.to_object.fig_id))
+        return sorted(
+            self.relationships.get(role, ()),
+            key=lambda x: (x.from_object.fig_id, x.to_object.fig_id),
+        )
 
-    def add_relationship(self, from_object, to_object,
-                         relation_type, name=None):
+    def add_relationship(self, from_object, to_object, relation_type, name=None):
         """create a relation ship
         """
         rel = Relationship(from_object, to_object, relation_type, name)
@@ -76,15 +84,18 @@ class ClassDiagram(Figure, FilterMixIn):
         """return visible attributes, possibly with class name"""
         attrs = []
         properties = [
-            (n, m) for n, m in node.items()
-            if isinstance(m, astroid.FunctionDef)
-            and decorated_with_property(m)
+            (n, m)
+            for n, m in node.items()
+            if isinstance(m, astroid.FunctionDef) and decorated_with_property(m)
         ]
-        for node_name, ass_nodes in list(node.instance_attrs_type.items()) + \
-                                    list(node.locals_type.items()) + properties:
+        for node_name, associated_nodes in (
+            list(node.instance_attrs_type.items())
+            + list(node.locals_type.items())
+            + properties
+        ):
             if not self.show_attr(node_name):
                 continue
-            names = self.class_names(ass_nodes)
+            names = self.class_names(associated_nodes)
             if names:
                 node_name = "%s : %s" % (node_name, ", ".join(names))
             attrs.append(node_name)
@@ -93,7 +104,8 @@ class ClassDiagram(Figure, FilterMixIn):
     def get_methods(self, node):
         """return visible methods"""
         methods = [
-            m for m in node.values()
+            m
+            for m in node.values()
             if isinstance(m, astroid.FunctionDef)
             and not decorated_with_property(m)
             and self.show_attr(m.name)
@@ -111,14 +123,17 @@ class ClassDiagram(Figure, FilterMixIn):
     def class_names(self, nodes):
         """return class names if needed in diagram"""
         names = []
-        for ass_node in nodes:
-            if isinstance(ass_node, astroid.Instance):
-                ass_node = ass_node._proxied
-            if isinstance(ass_node, astroid.ClassDef) \
-                and hasattr(ass_node, "name") and not self.has_node(ass_node):
-                if ass_node.name not in names:
-                    ass_name = ass_node.name
-                    names.append(ass_name)
+        for node in nodes:
+            if isinstance(node, astroid.Instance):
+                node = node._proxied
+            if (
+                isinstance(node, astroid.ClassDef)
+                and hasattr(node, "name")
+                and not self.has_node(node)
+            ):
+                if node.name not in names:
+                    node_name = node.name
+                    names.append(node_name)
         return names
 
     def nodes(self):
@@ -157,34 +172,35 @@ class ClassDiagram(Figure, FilterMixIn):
             obj.methods = self.get_methods(node)
             # shape
             if is_interface(node):
-                obj.shape = 'interface'
+                obj.shape = "interface"
             else:
-                obj.shape = 'class'
+                obj.shape = "class"
             # inheritance link
             for par_node in node.ancestors(recurs=False):
                 try:
                     par_obj = self.object_from_node(par_node)
-                    self.add_relationship(obj, par_obj, 'specialization')
+                    self.add_relationship(obj, par_obj, "specialization")
                 except KeyError:
                     continue
             # implements link
             for impl_node in node.implements:
                 try:
                     impl_obj = self.object_from_node(impl_node)
-                    self.add_relationship(obj, impl_obj, 'implements')
+                    self.add_relationship(obj, impl_obj, "implements")
                 except KeyError:
                     continue
             # associations link
-            for name, values in list(node.instance_attrs_type.items()) + \
-                                list(node.locals_type.items()):
+            for name, values in list(node.instance_attrs_type.items()) + list(
+                node.locals_type.items()
+            ):
                 for value in values:
-                    if value is astroid.YES:
+                    if value is astroid.Uninferable:
                         continue
                     if isinstance(value, astroid.Instance):
                         value = value._proxied
                     try:
-                        ass_obj = self.object_from_node(value)
-                        self.add_relationship(ass_obj, obj, 'association', name)
+                        associated_obj = self.object_from_node(value)
+                        self.add_relationship(associated_obj, obj, "association", name)
                     except KeyError:
                         continue
 
@@ -192,7 +208,8 @@ class ClassDiagram(Figure, FilterMixIn):
 class PackageDiagram(ClassDiagram):
     """package diagram handling
     """
-    TYPE = 'package'
+
+    TYPE = "package"
 
     def modules(self):
         """return all module nodes in the diagram"""
@@ -214,11 +231,11 @@ class PackageDiagram(ClassDiagram):
             mod_name = mod.node.name
             if mod_name == name:
                 return mod
-            #search for fullname of relative import modules
+            # search for fullname of relative import modules
             package = node.root().name
             if mod_name == "%s.%s" % (package, name):
                 return mod
-            if mod_name == "%s.%s" % (package.rsplit('.', 1)[0], name):
+            if mod_name == "%s.%s" % (package.rsplit(".", 1)[0], name):
                 return mod
         raise KeyError(name)
 
@@ -238,15 +255,15 @@ class PackageDiagram(ClassDiagram):
             # ownership
             try:
                 mod = self.object_from_node(obj.node.root())
-                self.add_relationship(obj, mod, 'ownership')
+                self.add_relationship(obj, mod, "ownership")
             except KeyError:
                 continue
         for obj in self.modules():
-            obj.shape = 'package'
+            obj.shape = "package"
             # dependencies
             for dep_name in obj.node.depends:
                 try:
                     dep = self.get_module(dep_name, obj.node)
                 except KeyError:
                     continue
-                self.add_relationship(obj, dep, 'depends')
+                self.add_relationship(obj, dep, "depends")

@@ -115,7 +115,7 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     def __class__(self):
         return self.__wrapped__.__class__
 
-    @__class__.setter
+    @__class__.setter  # noqa
     def __class__(self, value):
         self.__wrapped__.__class__ = value
 
@@ -141,12 +141,12 @@ class Proxy(with_metaclass(_ProxyMetaType)):
         try:
             target = __getattr__(self, '__target__')
         except AttributeError:
-            return '<%s at 0x%x with factory %r>' % (
+            return '<{} at 0x{:x} with factory {!r}>'.format(
                 type(self).__name__, id(self),
                 self.__factory__
             )
         else:
-            return '<%s at 0x%x wrapping %r at 0x%x with factory %r>' % (
+            return '<{} at 0x{:x} wrapping {!r} at 0x{:x} with factory {!r}>'.format(
                 type(self).__name__, id(self),
                 target, id(target),
                 self.__factory__
@@ -223,7 +223,7 @@ class Proxy(with_metaclass(_ProxyMetaType)):
         return self.__wrapped__ // other
 
     def __mod__(self, other):
-        return self.__wrapped__ ^ other
+        return self.__wrapped__ % other
 
     def __divmod__(self, other):
         return divmod(self.__wrapped__, other)
@@ -357,7 +357,7 @@ class Proxy(with_metaclass(_ProxyMetaType)):
 
     if PY2:
         def __long__(self):
-            return long(self.__wrapped__)  # flake8: noqa
+            return long(self.__wrapped__)  # noqa
 
     def __float__(self):
         return float(self.__wrapped__)
