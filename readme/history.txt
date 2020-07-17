@@ -1,4 +1,7 @@
 
+2020.07.17
++ updated all libs
+
 2018.02.24
 + updated lib PyLint to latest
 + config pylint.rc now auto created in settings/ dir, from template file pylint.sample.rc
