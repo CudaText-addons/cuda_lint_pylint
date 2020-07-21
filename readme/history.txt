@@ -1,4 +1,7 @@
 
+2020.07.21
++ show error codes like Ennn in linter results
+
 2020.07.17
 + updated all libs
 
