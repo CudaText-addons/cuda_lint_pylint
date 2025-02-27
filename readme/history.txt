@@ -1,10 +1,13 @@
+2025.02.27
++ add: updated all libs
++ add: updated default pylint.sample.rc
 
 2020.07.21
-+ show error codes like Ennn in linter results
++ add: show error codes like 'Exxxx' in linter results
 
 2020.07.17
-+ updated all libs
++ add: updated all libs
 
 2018.02.24
-+ updated lib PyLint to latest
-+ config pylint.rc now auto created in settings/ dir, from template file pylint.sample.rc
++ add: updated lib PyLint to latest
++ add: config pylint.rc now auto created in settings/ dir, from template file pylint.sample.rc
