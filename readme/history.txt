@@ -11,3 +11,6 @@
 2018.02.24
 + add: updated lib PyLint to latest
 + add: config pylint.rc now auto created in settings/ dir, from template file pylint.sample.rc
+
+2016.02
+initial version
