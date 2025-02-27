@@ -1,22 +1,38 @@
-# Copyright (c) 2015-2016, 2018-2019 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2015-2016 Ceridwen <ceridwenv@gmail.com>
-# Copyright (c) 2018 Bryce Guinta <bryce.paul.guinta@gmail.com>
-# Copyright (c) 2018 Nick Drozd <nicholasdrozd@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
 
 """Various context related utilities, including inference and call contexts."""
+
+from __future__ import annotations
+
 import contextlib
 import pprint
-from typing import Optional
+from collections.abc import Iterator, Sequence
+from typing import TYPE_CHECKING, Optional
+
+from astroid.typing import InferenceResult, SuccessfulInferenceResult
+
+if TYPE_CHECKING:
+    from astroid import constraint, nodes
+    from astroid.nodes.node_classes import Keyword, NodeNG
+
+_InferenceCache = dict[
+    tuple["NodeNG", Optional[str], Optional[str], Optional[str]], Sequence["NodeNG"]
+]
+
+_INFERENCE_CACHE: _InferenceCache = {}
+
+
+def _invalidate_cache() -> None:
+    _INFERENCE_CACHE.clear()
 
 
 class InferenceContext:
-    """Provide context for inference
+    """Provide context for inference.
 
     Store already inferred nodes to save time
-    Account for already visited nodes to infinite stop infinite recursion
+    Account for already visited nodes to stop infinite recursion
     """
 
     __slots__ = (
@@ -24,67 +40,78 @@ class InferenceContext:
         "lookupname",
         "callcontext",
         "boundnode",
-        "inferred",
         "extra_context",
+        "constraints",
+        "_nodes_inferred",
     )
 
-    def __init__(self, path=None, inferred=None):
-        self.path = path or set()
-        """
-        :type: set(tuple(NodeNG, optional(str)))
+    max_inferred = 100
 
-        Path of visited nodes and their lookupname
+    def __init__(
+        self,
+        path: set[tuple[nodes.NodeNG, str | None]] | None = None,
+        nodes_inferred: list[int] | None = None,
+    ) -> None:
+        if nodes_inferred is None:
+            self._nodes_inferred = [0]
+        else:
+            self._nodes_inferred = nodes_inferred
+
+        self.path = path or set()
+        """Path of visited nodes and their lookupname.
 
         Currently this key is ``(node, context.lookupname)``
         """
-        self.lookupname = None
-        """
-        :type: optional[str]
-
-        The original name of the node
+        self.lookupname: str | None = None
+        """The original name of the node.
 
         e.g.
         foo = 1
         The inference of 'foo' is nodes.Const(1) but the lookup name is 'foo'
         """
-        self.callcontext = None
-        """
-        :type: optional[CallContext]
-
-        The call arguments and keywords for the given context
-        """
-        self.boundnode = None
-        """
-        :type: optional[NodeNG]
-
-        The bound node of the given context
+        self.callcontext: CallContext | None = None
+        """The call arguments and keywords for the given context."""
+        self.boundnode: SuccessfulInferenceResult | None = None
+        """The bound node of the given context.
 
         e.g. the bound node of object.__new__(cls) is the object node
         """
-        self.inferred = inferred or {}
-        """
-        :type: dict(seq, seq)
+        self.extra_context: dict[SuccessfulInferenceResult, InferenceContext] = {}
+        """Context that needs to be passed down through call stacks for call arguments."""
 
-        Inferred node contexts to their mapped results
+        self.constraints: dict[str, dict[nodes.If, set[constraint.Constraint]]] = {}
+        """The constraints on nodes."""
+
+    @property
+    def nodes_inferred(self) -> int:
+        """
+        Number of nodes inferred in this context and all its clones/descendents.
+
+        Wrap inner value in a mutable cell to allow for mutating a class
+        variable in the presence of __slots__
+        """
+        return self._nodes_inferred[0]
+
+    @nodes_inferred.setter
+    def nodes_inferred(self, value: int) -> None:
+        self._nodes_inferred[0] = value
+
+    @property
+    def inferred(self) -> _InferenceCache:
+        """
+        Inferred node contexts to their mapped results.
+
         Currently the key is ``(node, lookupname, callcontext, boundnode)``
         and the value is tuple of the inferred results
         """
-        self.extra_context = {}
-        """
-        :type: dict(NodeNG, Context)
+        return _INFERENCE_CACHE
 
-        Context that needs to be passed down through call stacks
-        for call arguments
-        """
-
-    def push(self, node):
-        """Push node into inference path
-
-        :return: True if node is already in context path else False
-        :rtype: bool
+    def push(self, node: nodes.NodeNG) -> bool:
+        """Push node into inference path.
 
         Allows one to see if the given node has already
-        been looked at for this inference context"""
+        been looked at for this inference context
+        """
         name = self.lookupname
         if (node, name) in self.path:
             return True
@@ -92,87 +119,84 @@ class InferenceContext:
         self.path.add((node, name))
         return False
 
-    def clone(self):
-        """Clone inference path
+    def clone(self) -> InferenceContext:
+        """Clone inference path.
 
         For example, each side of a binary operation (BinOp)
         starts with the same context but diverge as each side is inferred
-        so the InferenceContext will need be cloned"""
+        so the InferenceContext will need be cloned
+        """
         # XXX copy lookupname/callcontext ?
-        clone = InferenceContext(self.path, inferred=self.inferred)
+        clone = InferenceContext(self.path.copy(), nodes_inferred=self._nodes_inferred)
         clone.callcontext = self.callcontext
         clone.boundnode = self.boundnode
         clone.extra_context = self.extra_context
+        clone.constraints = self.constraints.copy()
         return clone
 
-    def cache_generator(self, key, generator):
-        """Cache result of generator into dictionary
-
-        Used to cache inference results"""
-        results = []
-        for result in generator:
-            results.append(result)
-            yield result
-
-        self.inferred[key] = tuple(results)
-
     @contextlib.contextmanager
-    def restore_path(self):
+    def restore_path(self) -> Iterator[None]:
         path = set(self.path)
         yield
         self.path = path
 
-    def __str__(self):
+    def is_empty(self) -> bool:
+        return (
+            not self.path
+            and not self.nodes_inferred
+            and not self.callcontext
+            and not self.boundnode
+            and not self.lookupname
+            and not self.callcontext
+            and not self.extra_context
+            and not self.constraints
+        )
+
+    def __str__(self) -> str:
         state = (
-            "%s=%s"
-            % (field, pprint.pformat(getattr(self, field), width=80 - len(field)))
+            f"{field}={pprint.pformat(getattr(self, field), width=80 - len(field))}"
             for field in self.__slots__
         )
-        return "%s(%s)" % (type(self).__name__, ",\n    ".join(state))
+        return "{}({})".format(type(self).__name__, ",\n    ".join(state))
 
 
 class CallContext:
     """Holds information for a call site."""
 
-    __slots__ = ("args", "keywords")
+    __slots__ = ("args", "keywords", "callee")
 
-    def __init__(self, args, keywords=None):
-        """
-        :param List[NodeNG] args: Call positional arguments
-        :param Union[List[nodes.Keyword], None] keywords: Call keywords
-        """
-        self.args = args
+    def __init__(
+        self,
+        args: list[NodeNG],
+        keywords: list[Keyword] | None = None,
+        callee: InferenceResult | None = None,
+    ):
+        self.args = args  # Call positional arguments
         if keywords:
-            keywords = [(arg.arg, arg.value) for arg in keywords]
+            arg_value_pairs = [(arg.arg, arg.value) for arg in keywords]
         else:
-            keywords = []
-        self.keywords = keywords
+            arg_value_pairs = []
+        self.keywords = arg_value_pairs  # Call keyword arguments
+        self.callee = callee  # Function being called
 
 
-def copy_context(context: Optional[InferenceContext]) -> InferenceContext:
-    """Clone a context if given, or return a fresh contexxt"""
+def copy_context(context: InferenceContext | None) -> InferenceContext:
+    """Clone a context if given, or return a fresh context."""
     if context is not None:
         return context.clone()
 
     return InferenceContext()
 
 
-def bind_context_to_node(context, node):
+def bind_context_to_node(
+    context: InferenceContext | None, node: SuccessfulInferenceResult
+) -> InferenceContext:
     """Give a context a boundnode
     to retrieve the correct function name or attribute value
     with from further inference.
 
     Do not use an existing context since the boundnode could then
     be incorrectly propagated higher up in the call stack.
-
-    :param context: Context to use
-    :type context: Optional(context)
-
-    :param node: Node to do name lookups from
-    :type node NodeNG:
-
-    :returns: A new context
-    :rtype: InferenceContext
     """
     context = copy_context(context)
     context.boundnode = node

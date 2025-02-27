@@ -1,29 +1,30 @@
-# Copyright (c) 2014-2016, 2018, 2020 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2015-2016 Ceridwen <ceridwenv@gmail.com>
-# Copyright (c) 2018 Bryce Guinta <bryce.paul.guinta@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
-
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
 
 """Astroid hooks for six module."""
 
 from textwrap import dedent
 
-from astroid import MANAGER, register_module_extender
+from astroid import nodes
+from astroid.brain.helpers import register_module_extender
 from astroid.builder import AstroidBuilder
 from astroid.exceptions import (
     AstroidBuildingError,
-    InferenceError,
     AttributeInferenceError,
+    InferenceError,
 )
-from astroid import nodes
-
+from astroid.manager import AstroidManager
 
 SIX_ADD_METACLASS = "six.add_metaclass"
+SIX_WITH_METACLASS = "six.with_metaclass"
 
 
-def _indent(text, prefix, predicate=None):
+def default_predicate(line):
+    return line.strip()
+
+
+def _indent(text, prefix, predicate=default_predicate) -> str:
     """Adds 'prefix' to the beginning of selected lines in 'text'.
 
     If 'predicate' is provided, 'prefix' will only be added to the lines
@@ -31,8 +32,6 @@ def _indent(text, prefix, predicate=None):
     it will default to adding 'prefix' to all non-empty lines that do not
     consist solely of whitespace characters.
     """
-    if predicate is None:
-        predicate = lambda line: line.strip()
 
     def prefixed_lines():
         for line in text.splitlines(True):
@@ -115,7 +114,7 @@ def six_moves_transform():
     moves = Moves()
     """
     ).format(_indent(_IMPORTS, "    "))
-    module = AstroidBuilder(MANAGER).string_build(code)
+    module = AstroidBuilder(AstroidManager()).string_build(code)
     module.name = "six.moves"
     return module
 
@@ -137,7 +136,7 @@ def _six_fail_hook(modname):
     attribute_of = modname != "six.moves" and modname.startswith("six.moves")
     if modname != "six.moves" and not attribute_of:
         raise AstroidBuildingError(modname=modname)
-    module = AstroidBuilder(MANAGER).string_build(_IMPORTS)
+    module = AstroidBuilder(AstroidManager()).string_build(_IMPORTS)
     module.name = "six.moves"
     if attribute_of:
         # Facilitate import of submodules in Moves
@@ -145,17 +144,17 @@ def _six_fail_hook(modname):
         attribute = modname[start_index:].lstrip(".").replace(".", "_")
         try:
             import_attr = module.getattr(attribute)[0]
-        except AttributeInferenceError:
-            raise AstroidBuildingError(modname=modname)
+        except AttributeInferenceError as exc:
+            raise AstroidBuildingError(modname=modname) from exc
         if isinstance(import_attr, nodes.Import):
-            submodule = MANAGER.ast_from_module_name(import_attr.names[0][0])
+            submodule = AstroidManager().ast_from_module_name(import_attr.names[0][0])
             return submodule
     # Let dummy submodule imports pass through
     # This will cause an Uninferable result, which is okay
     return module
 
 
-def _looks_like_decorated_with_six_add_metaclass(node):
+def _looks_like_decorated_with_six_add_metaclass(node) -> bool:
     if not node.decorators:
         return False
 
@@ -167,8 +166,8 @@ def _looks_like_decorated_with_six_add_metaclass(node):
     return False
 
 
-def transform_six_add_metaclass(node):
-    """Check if the given class node is decorated with *six.add_metaclass*
+def transform_six_add_metaclass(node):  # pylint: disable=inconsistent-return-statements
+    """Check if the given class node is decorated with *six.add_metaclass*.
 
     If so, inject its argument as the metaclass of the underlying class.
     """
@@ -181,21 +180,61 @@ def transform_six_add_metaclass(node):
 
         try:
             func = next(decorator.func.infer())
-        except InferenceError:
+        except (InferenceError, StopIteration):
             continue
         if func.qname() == SIX_ADD_METACLASS and decorator.args:
             metaclass = decorator.args[0]
             node._metaclass = metaclass
             return node
+    return
 
 
-register_module_extender(MANAGER, "six", six_moves_transform)
-register_module_extender(
-    MANAGER, "requests.packages.urllib3.packages.six", six_moves_transform
-)
-MANAGER.register_failed_import_hook(_six_fail_hook)
-MANAGER.register_transform(
-    nodes.ClassDef,
-    transform_six_add_metaclass,
-    _looks_like_decorated_with_six_add_metaclass,
-)
+def _looks_like_nested_from_six_with_metaclass(node) -> bool:
+    if len(node.bases) != 1:
+        return False
+    base = node.bases[0]
+    if not isinstance(base, nodes.Call):
+        return False
+    try:
+        if hasattr(base.func, "expr"):
+            # format when explicit 'six.with_metaclass' is used
+            mod = base.func.expr.name
+            func = base.func.attrname
+            func = f"{mod}.{func}"
+        else:
+            # format when 'with_metaclass' is used directly (local import from six)
+            # check reference module to avoid 'with_metaclass' name clashes
+            mod = base.parent.parent
+            import_from = mod.locals["with_metaclass"][0]
+            func = f"{import_from.modname}.{base.func.name}"
+    except (AttributeError, KeyError, IndexError):
+        return False
+    return func == SIX_WITH_METACLASS
+
+
+def transform_six_with_metaclass(node):
+    """Check if the given class node is defined with *six.with_metaclass*.
+
+    If so, inject its argument as the metaclass of the underlying class.
+    """
+    call = node.bases[0]
+    node._metaclass = call.args[0]
+    return node
+
+
+def register(manager: AstroidManager) -> None:
+    register_module_extender(manager, "six", six_moves_transform)
+    register_module_extender(
+        manager, "requests.packages.urllib3.packages.six", six_moves_transform
+    )
+    manager.register_failed_import_hook(_six_fail_hook)
+    manager.register_transform(
+        nodes.ClassDef,
+        transform_six_add_metaclass,
+        _looks_like_decorated_with_six_add_metaclass,
+    )
+    manager.register_transform(
+        nodes.ClassDef,
+        transform_six_with_metaclass,
+        _looks_like_nested_from_six_with_metaclass,
+    )

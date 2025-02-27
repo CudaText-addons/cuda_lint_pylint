@@ -1,49 +1,49 @@
-# Copyright (c) 2007, 2010, 2013, 2015 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
-# Copyright (c) 2013 Google, Inc.
-# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
-# Copyright (c) 2015-2018 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2015 Mike Frysinger <vapier@gentoo.org>
-# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
-# Copyright (c) 2016 Glenn Matthews <glenn@e-dad.net>
-# Copyright (c) 2018 ssolanki <sushobhitsolanki@gmail.com>
-# Copyright (c) 2019 Pierre Sassoulas <pierre.sassoulas@gmail.com>
-
 # Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+# For details: https://github.com/pylint-dev/pylint/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/pylint/blob/main/CONTRIBUTORS.txt
 
-""" Copyright (c) 2003-2010 LOGILAB S.A. (Paris, FRANCE).
- http://www.logilab.fr/ -- mailto:contact@logilab.fr
-
-Raw metrics checker
-"""
+from __future__ import annotations
 
 import tokenize
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pylint.checkers import BaseTokenChecker
-from pylint.exceptions import EmptyReportError
-from pylint.interfaces import ITokenChecker
-from pylint.reporters.ureports.nodes import Table
+from pylint.reporters.ureports.nodes import Paragraph, Section, Table, Text
+from pylint.utils import LinterStats, diff_string
+
+if TYPE_CHECKING:
+    from pylint.lint import PyLinter
 
 
-def report_raw_stats(sect, stats, _):
-    """calculate percentage of code / doc / comment / empty
-    """
-    total_lines = stats["total_lines"]
-    if not total_lines:
-        raise EmptyReportError()
-    sect.description = "%s lines have been analyzed" % total_lines
-    lines = ("type", "number", "%", "previous", "difference")
+def report_raw_stats(
+    sect: Section,
+    stats: LinterStats,
+    old_stats: LinterStats | None,
+) -> None:
+    """Calculate percentage of code / doc / comment / empty."""
+    total_lines = stats.code_type_count["total"]
+    sect.insert(0, Paragraph([Text(f"{total_lines} lines have been analyzed\n")]))
+    lines = ["type", "number", "%", "previous", "difference"]
     for node_type in ("code", "docstring", "comment", "empty"):
-        key = node_type + "_lines"
-        total = stats[key]
-        percent = float(total * 100) / total_lines
-        lines += (node_type, str(total), "%.2f" % percent, "NC", "NC")
+        node_type = cast(Literal["code", "docstring", "comment", "empty"], node_type)
+        total = stats.code_type_count[node_type]
+        percent = float(total * 100) / total_lines if total_lines else None
+        old = old_stats.code_type_count[node_type] if old_stats else None
+        diff_str = diff_string(old, total) if old else None
+        lines += [
+            node_type,
+            str(total),
+            f"{percent:.2f}" if percent is not None else "NC",
+            str(old) if old else "NC",
+            diff_str if diff_str else "NC",
+        ]
     sect.append(Table(children=lines, cols=5, rheaders=1))
 
 
 class RawMetricsChecker(BaseTokenChecker):
-    """does not check anything but gives some raw metrics :
+    """Checker that provides raw metrics instead of checking anything.
+
+    Provides:
     * total number of lines
     * total number of code lines
     * total number of docstring lines
@@ -51,48 +51,37 @@ class RawMetricsChecker(BaseTokenChecker):
     * total number of empty lines
     """
 
-    __implements__ = (ITokenChecker,)
-
     # configuration section name
     name = "metrics"
     # configuration options
     options = ()
     # messages
-    msgs = {}  # type: Any
+    msgs: Any = {}
     # reports
     reports = (("RP0701", "Raw metrics", report_raw_stats),)
 
-    def __init__(self, linter):
-        BaseTokenChecker.__init__(self, linter)
-        self.stats = None
+    def open(self) -> None:
+        """Init statistics."""
+        self.linter.stats.reset_code_count()
 
-    def open(self):
-        """init statistics"""
-        self.stats = self.linter.add_stats(
-            total_lines=0,
-            code_lines=0,
-            empty_lines=0,
-            docstring_lines=0,
-            comment_lines=0,
-        )
-
-    def process_tokens(self, tokens):
-        """update stats"""
+    def process_tokens(self, tokens: list[tokenize.TokenInfo]) -> None:
+        """Update stats."""
         i = 0
         tokens = list(tokens)
         while i < len(tokens):
             i, lines_number, line_type = get_type(tokens, i)
-            self.stats["total_lines"] += lines_number
-            self.stats[line_type] += lines_number
+            self.linter.stats.code_type_count["total"] += lines_number
+            self.linter.stats.code_type_count[line_type] += lines_number
 
 
 JUNK = (tokenize.NL, tokenize.INDENT, tokenize.NEWLINE, tokenize.ENDMARKER)
 
 
-def get_type(tokens, start_index):
-    """return the line type : docstring, comment, code, empty"""
+def get_type(
+    tokens: list[tokenize.TokenInfo], start_index: int
+) -> tuple[int, int, Literal["code", "docstring", "comment", "empty"]]:
+    """Return the line type : docstring, comment, code, empty."""
     i = start_index
-    tok_type = tokens[i][0]
     start = tokens[i][2]
     pos = start
     line_type = None
@@ -101,21 +90,21 @@ def get_type(tokens, start_index):
         pos = tokens[i][3]
         if line_type is None:
             if tok_type == tokenize.STRING:
-                line_type = "docstring_lines"
+                line_type = "docstring"
             elif tok_type == tokenize.COMMENT:
-                line_type = "comment_lines"
+                line_type = "comment"
             elif tok_type in JUNK:
                 pass
             else:
-                line_type = "code_lines"
+                line_type = "code"
         i += 1
     if line_type is None:
-        line_type = "empty_lines"
+        line_type = "empty"
     elif i < len(tokens) and tokens[i][0] == tokenize.NEWLINE:
         i += 1
-    return i, pos[0] - start[0] + 1, line_type
+    # Mypy fails to infer the literal of line_type
+    return i, pos[0] - start[0] + 1, line_type  # type: ignore[return-value]
 
 
-def register(linter):
-    """ required method to auto register this checker """
+def register(linter: PyLinter) -> None:
     linter.register_checker(RawMetricsChecker(linter))

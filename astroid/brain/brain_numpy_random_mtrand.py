@@ -1,16 +1,16 @@
-# Copyright (c) 2019 hippo91 <guillaume.peillex@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
 
 # TODO(hippo91) : correct the functions return types
 """Astroid hooks for numpy.random.mtrand module."""
-
-import astroid
+from astroid.brain.helpers import register_module_extender
+from astroid.builder import parse
+from astroid.manager import AstroidManager
 
 
 def numpy_random_mtrand_transform():
-    return astroid.parse(
+    return parse(
         """
     def beta(a, b, size=None): return uninferable
     def binomial(n, p, size=None): return uninferable
@@ -44,6 +44,7 @@ def numpy_random_mtrand_transform():
         import numpy
         return numpy.ndarray((1,1))
     def randn(*args): return uninferable
+    def random(size=None): return uninferable
     def random_integers(low, high=None, size=None): return uninferable
     def random_sample(size=None): return uninferable
     def rayleigh(scale=1.0, size=None): return uninferable
@@ -65,6 +66,7 @@ def numpy_random_mtrand_transform():
     )
 
 
-astroid.register_module_extender(
-    astroid.MANAGER, "numpy.random.mtrand", numpy_random_mtrand_transform
-)
+def register(manager: AstroidManager) -> None:
+    register_module_extender(
+        manager, "numpy.random.mtrand", numpy_random_mtrand_transform
+    )

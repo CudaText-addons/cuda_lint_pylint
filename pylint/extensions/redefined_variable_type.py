@@ -1,25 +1,22 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) 2016-2018 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2016 Glenn Matthews <glmatthe@cisco.com>
-# Copyright (c) 2018 Sushobhit <31987769+sushobhit27@users.noreply.github.com>
-# Copyright (c) 2018 Ville Skyttä <ville.skytta@iki.fi>
-# Copyright (c) 2019 Pierre Sassoulas <pierre.sassoulas@gmail.com>
-# Copyright (c) 2020 Anthony Sottile <asottile@umich.edu>
-
 # Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+# For details: https://github.com/pylint-dev/pylint/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/pylint/blob/main/CONTRIBUTORS.txt
 
-import astroid
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from astroid import nodes
 
 from pylint.checkers import BaseChecker
-from pylint.checkers.utils import check_messages, is_none, node_type
-from pylint.interfaces import IAstroidChecker
+from pylint.checkers.utils import is_none, node_type, only_required_for_messages
 
-BUILTINS = "builtins"
+if TYPE_CHECKING:
+    from pylint.lint import PyLinter
 
 
 class MultipleTypesChecker(BaseChecker):
-    """Checks for variable type redefinitions (NoneType excepted)
+    """Checks for variable type redefinition (NoneType excepted).
 
     At a function, method, class or module scope
 
@@ -28,11 +25,9 @@ class MultipleTypesChecker(BaseChecker):
     - Currently, if an attribute is set to different types in 2 methods of a
       same class, it won't be detected (see functional test)
     - One could improve the support for inference on assignment with tuples,
-      ifexpr, etc. Also it would be great to have support for inference on
+      ifexpr, etc. Also, it would be great to have support for inference on
       str.split()
     """
-
-    __implements__ = IAstroidChecker
 
     name = "multiple_types"
     msgs = {
@@ -44,20 +39,20 @@ class MultipleTypesChecker(BaseChecker):
         )
     }
 
-    def visit_classdef(self, _):
+    def visit_classdef(self, _: nodes.ClassDef) -> None:
         self._assigns.append({})
 
-    @check_messages("redefined-variable-type")
-    def leave_classdef(self, _):
+    @only_required_for_messages("redefined-variable-type")
+    def leave_classdef(self, _: nodes.ClassDef) -> None:
         self._check_and_add_messages()
 
-    visit_functiondef = visit_classdef
-    leave_functiondef = leave_module = leave_classdef
+    visit_functiondef = visit_asyncfunctiondef = visit_classdef
+    leave_functiondef = leave_asyncfunctiondef = leave_module = leave_classdef
 
-    def visit_module(self, _):
-        self._assigns = [{}]
+    def visit_module(self, _: nodes.Module) -> None:
+        self._assigns: list[dict[str, list[tuple[nodes.Assign, str]]]] = [{}]
 
-    def _check_and_add_messages(self):
+    def _check_and_add_messages(self) -> None:
         assigns = self._assigns.pop()
         for name, args in assigns.items():
             if len(args) <= 1:
@@ -72,7 +67,7 @@ class MultipleTypesChecker(BaseChecker):
                 # this is not actually redefining.
                 orig_parent = orig_node.parent
                 redef_parent = redef_node.parent
-                if isinstance(orig_parent, astroid.If):
+                if isinstance(orig_parent, nodes.If):
                     if orig_parent == redef_parent:
                         if (
                             redef_node in orig_parent.orelse
@@ -81,12 +76,12 @@ class MultipleTypesChecker(BaseChecker):
                             orig_node, orig_type = redef_node, redef_type
                             continue
                     elif isinstance(
-                        redef_parent, astroid.If
-                    ) and redef_parent in orig_parent.nodes_of_class(astroid.If):
+                        redef_parent, nodes.If
+                    ) and redef_parent in orig_parent.nodes_of_class(nodes.If):
                         orig_node, orig_type = redef_node, redef_type
                         continue
-                orig_type = orig_type.replace(BUILTINS + ".", "")
-                redef_type = redef_type.replace(BUILTINS + ".", "")
+                orig_type = orig_type.replace("builtins.", "")
+                redef_type = redef_type.replace("builtins.", "")
                 self.add_message(
                     "redefined-variable-type",
                     node=redef_node,
@@ -94,10 +89,10 @@ class MultipleTypesChecker(BaseChecker):
                 )
                 break
 
-    def visit_assign(self, node):
+    def visit_assign(self, node: nodes.Assign) -> None:
         # we don't handle multiple assignment nor slice assignment
         target = node.targets[0]
-        if isinstance(target, (astroid.Tuple, astroid.Subscript)):
+        if isinstance(target, (nodes.Tuple, nodes.Subscript)):
             return
         # ignore NoneType
         if is_none(node):
@@ -109,10 +104,5 @@ class MultipleTypesChecker(BaseChecker):
             )
 
 
-def register(linter):
-    """Required method to auto register this checker.
-
-    :param linter: Main interface object for Pylint plugins
-    :type linter: Pylint object
-    """
+def register(linter: PyLinter) -> None:
     linter.register_checker(MultipleTypesChecker(linter))

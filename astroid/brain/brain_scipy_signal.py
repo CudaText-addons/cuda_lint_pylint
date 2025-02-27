@@ -1,16 +1,15 @@
-# Copyright (c) 2019 Valentin Valls <valentin.valls@esrf.fr>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
-
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
 
 """Astroid hooks for scipy.signal module."""
-
-import astroid
+from astroid.brain.helpers import register_module_extender
+from astroid.builder import parse
+from astroid.manager import AstroidManager
 
 
 def scipy_signal():
-    return astroid.parse(
+    return parse(
         """
     # different functions defined in scipy.signals
 
@@ -86,4 +85,5 @@ def scipy_signal():
     )
 
 
-astroid.register_module_extender(astroid.MANAGER, "scipy.signal", scipy_signal)
+def register(manager: AstroidManager) -> None:
+    register_module_extender(manager, "scipy.signal", scipy_signal)

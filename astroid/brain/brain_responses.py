@@ -1,3 +1,7 @@
+# Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
+
 """
 Astroid hooks for responses.
 
@@ -5,13 +9,14 @@ It might need to be manually updated from the public methods of
 :class:`responses.RequestsMock`.
 
 See: https://github.com/getsentry/responses/blob/master/responses.py
-
 """
-import astroid
+from astroid.brain.helpers import register_module_extender
+from astroid.builder import parse
+from astroid.manager import AstroidManager
 
 
 def responses_funcs():
-    return astroid.parse(
+    return parse(
         """
         DELETE = "DELETE"
         GET = "GET"
@@ -70,4 +75,5 @@ def responses_funcs():
     )
 
 
-astroid.register_module_extender(astroid.MANAGER, "responses", responses_funcs)
+def register(manager: AstroidManager) -> None:
+    register_module_extender(manager, "responses", responses_funcs)

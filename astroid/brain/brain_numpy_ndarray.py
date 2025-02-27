@@ -1,29 +1,32 @@
-# Copyright (c) 2015-2016, 2018-2019 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2016 Ceridwen <ceridwenv@gmail.com>
-# Copyright (c) 2017-2020 hippo91 <guillaume.peillex@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
-
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
 
 """Astroid hooks for numpy ndarray class."""
+from __future__ import annotations
 
-import functools
-import astroid
+from astroid.brain.brain_numpy_utils import numpy_supports_type_hints
+from astroid.builder import extract_node
+from astroid.context import InferenceContext
+from astroid.inference_tip import inference_tip
+from astroid.manager import AstroidManager
+from astroid.nodes.node_classes import Attribute
 
 
-def infer_numpy_ndarray(node, context=None):
+def infer_numpy_ndarray(node, context: InferenceContext | None = None):
     ndarray = """
     class ndarray(object):
         def __init__(self, shape, dtype=float, buffer=None, offset=0,
                      strides=None, order=None):
-            self.T = None
+            self.T = numpy.ndarray([0, 0])
             self.base = None
             self.ctypes = None
             self.data = None
             self.dtype = None
             self.flags = None
-            self.flat = None
+            # Should be a numpy.flatiter instance but not available for now
+            # Putting an array instead so that iteration and indexing are authorized
+            self.flat = np.ndarray([0, 0])
             self.imag = np.ndarray([0, 0])
             self.itemsize = None
             self.nbytes = None
@@ -71,7 +74,7 @@ def infer_numpy_ndarray(node, context=None):
         def __mul__(self, value): return numpy.ndarray([0, 0])
         def __ne__(self, value): return numpy.ndarray([0, 0])
         def __neg__(self): return numpy.ndarray([0, 0])
-        def __or__(self): return numpy.ndarray([0, 0])
+        def __or__(self, value): return numpy.ndarray([0, 0])
         def __pos__(self): return numpy.ndarray([0, 0])
         def __pow__(self): return numpy.ndarray([0, 0])
         def __repr__(self): return str()
@@ -138,16 +141,23 @@ def infer_numpy_ndarray(node, context=None):
         def var(self, axis=None, dtype=None, out=None, ddof=0, keepdims=False): return np.ndarray([0, 0])
         def view(self, dtype=None, type=None): return np.ndarray([0, 0])
     """
-    node = astroid.extract_node(ndarray)
+    if numpy_supports_type_hints():
+        ndarray += """
+        @classmethod
+        def __class_getitem__(cls, value):
+            return cls
+        """
+    node = extract_node(ndarray)
     return node.infer(context=context)
 
 
-def _looks_like_numpy_ndarray(node):
-    return isinstance(node, astroid.Attribute) and node.attrname == "ndarray"
+def _looks_like_numpy_ndarray(node) -> bool:
+    return isinstance(node, Attribute) and node.attrname == "ndarray"
 
 
-astroid.MANAGER.register_transform(
-    astroid.Attribute,
-    astroid.inference_tip(infer_numpy_ndarray),
-    _looks_like_numpy_ndarray,
-)
+def register(manager: AstroidManager) -> None:
+    manager.register_transform(
+        Attribute,
+        inference_tip(infer_numpy_ndarray),
+        _looks_like_numpy_ndarray,
+    )

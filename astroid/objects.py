@@ -1,13 +1,6 @@
-# Copyright (c) 2015-2016, 2018-2020 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2015-2016 Ceridwen <ceridwenv@gmail.com>
-# Copyright (c) 2015 Florian Bruhin <me@the-compiler.org>
-# Copyright (c) 2016 Derek Gustafson <degustaf@gmail.com>
-# Copyright (c) 2018 hippo91 <guillaume.peillex@gmail.com>
-# Copyright (c) 2018 Bryce Guinta <bryce.paul.guinta@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
-
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
 
 """
 Inference objects are a way to represent composite AST nodes,
@@ -18,33 +11,40 @@ leads to an inferred FrozenSet:
     Call(func=Name('frozenset'), args=Tuple(...))
 """
 
-import builtins
+from __future__ import annotations
 
-from astroid import bases
-from astroid import decorators
-from astroid import exceptions
-from astroid import MANAGER
-from astroid import node_classes
-from astroid import scoped_nodes
-from astroid import util
+from collections.abc import Generator, Iterator
+from functools import cached_property
+from typing import Any, Literal, NoReturn, TypeVar
+
+from astroid import bases, util
+from astroid.context import InferenceContext
+from astroid.exceptions import (
+    AttributeInferenceError,
+    InferenceError,
+    MroError,
+    SuperError,
+)
+from astroid.interpreter import objectmodel
+from astroid.manager import AstroidManager
+from astroid.nodes import node_classes, scoped_nodes
+from astroid.typing import InferenceResult, SuccessfulInferenceResult
+
+_T = TypeVar("_T")
 
 
-BUILTINS = builtins.__name__
-objectmodel = util.lazy_import("interpreter.objectmodel")
+class FrozenSet(node_classes.BaseContainer):
+    """Class representing a FrozenSet composite node."""
 
+    def pytype(self) -> Literal["builtins.frozenset"]:
+        return "builtins.frozenset"
 
-class FrozenSet(node_classes._BaseContainer):
-    """class representing a FrozenSet composite node"""
-
-    def pytype(self):
-        return "%s.frozenset" % BUILTINS
-
-    def _infer(self, context=None):
+    def _infer(self, context: InferenceContext | None = None, **kwargs: Any):
         yield self
 
-    @decorators.cachedproperty
+    @cached_property
     def _proxied(self):  # pylint: disable=method-hidden
-        ast_builtins = MANAGER.builtins_module
+        ast_builtins = AstroidManager().builtins_module
         return ast_builtins.getattr("frozenset")[0]
 
 
@@ -61,24 +61,36 @@ class Super(node_classes.NodeNG):
     *scope* is the function where the super call is.
     """
 
-    # pylint: disable=unnecessary-lambda
-    special_attributes = util.lazy_descriptor(lambda: objectmodel.SuperModel())
+    special_attributes = objectmodel.SuperModel()
 
-    # pylint: disable=super-init-not-called
-    def __init__(self, mro_pointer, mro_type, self_class, scope):
+    def __init__(
+        self,
+        mro_pointer: SuccessfulInferenceResult,
+        mro_type: SuccessfulInferenceResult,
+        self_class: scoped_nodes.ClassDef,
+        scope: scoped_nodes.FunctionDef,
+        call: node_classes.Call,
+    ) -> None:
         self.type = mro_type
         self.mro_pointer = mro_pointer
         self._class_based = False
         self._self_class = self_class
         self._scope = scope
+        super().__init__(
+            parent=scope,
+            lineno=scope.lineno,
+            col_offset=scope.col_offset,
+            end_lineno=scope.end_lineno,
+            end_col_offset=scope.end_col_offset,
+        )
 
-    def _infer(self, context=None):
+    def _infer(self, context: InferenceContext | None = None, **kwargs: Any):
         yield self
 
     def super_mro(self):
         """Get the MRO which will be used to lookup attributes in this super."""
         if not isinstance(self.mro_pointer, scoped_nodes.ClassDef):
-            raise exceptions.SuperError(
+            raise SuperError(
                 "The first argument to super must be a subtype of "
                 "type, not {mro_pointer}.",
                 super_=self,
@@ -91,20 +103,18 @@ class Super(node_classes.NodeNG):
         else:
             mro_type = getattr(self.type, "_proxied", None)
             if not isinstance(mro_type, (bases.Instance, scoped_nodes.ClassDef)):
-                raise exceptions.SuperError(
+                raise SuperError(
                     "The second argument to super must be an "
                     "instance or subtype of type, not {type}.",
                     super_=self,
                 )
 
         if not mro_type.newstyle:
-            raise exceptions.SuperError(
-                "Unable to call super on old-style classes.", super_=self
-            )
+            raise SuperError("Unable to call super on old-style classes.", super_=self)
 
         mro = mro_type.mro()
         if self.mro_pointer not in mro:
-            raise exceptions.SuperError(
+            raise SuperError(
                 "The second argument to super must be an "
                 "instance or subtype of type, not {type}.",
                 super_=self,
@@ -113,15 +123,15 @@ class Super(node_classes.NodeNG):
         index = mro.index(self.mro_pointer)
         return mro[index + 1 :]
 
-    @decorators.cachedproperty
+    @cached_property
     def _proxied(self):
-        ast_builtins = MANAGER.builtins_module
+        ast_builtins = AstroidManager().builtins_module
         return ast_builtins.getattr("super")[0]
 
-    def pytype(self):
-        return "%s.super" % BUILTINS
+    def pytype(self) -> Literal["builtins.super"]:
+        return "builtins.super"
 
-    def display_type(self):
+    def display_type(self) -> str:
         return "Super of"
 
     @property
@@ -129,13 +139,16 @@ class Super(node_classes.NodeNG):
         """Get the name of the MRO pointer."""
         return self.mro_pointer.name
 
-    def qname(self):
+    def qname(self) -> Literal["super"]:
         return "super"
 
-    def igetattr(self, name, context=None):
+    def igetattr(  # noqa: C901
+        self, name: str, context: InferenceContext | None = None
+    ) -> Iterator[InferenceResult]:
         """Retrieve the inferred values of the given attribute name."""
-
-        if name in self.special_attributes:
+        # '__class__' is a special attribute that should be taken directly
+        # from the special attributes dict
+        if name == "__class__":
             yield self.special_attributes.lookup(name)
             return
 
@@ -143,8 +156,8 @@ class Super(node_classes.NodeNG):
             mro = self.super_mro()
         # Don't let invalid MROs or invalid super calls
         # leak out as is from this function.
-        except exceptions.SuperError as exc:
-            raise exceptions.AttributeInferenceError(
+        except SuperError as exc:
+            raise AttributeInferenceError(
                 (
                     "Lookup for {name} on {target!r} because super call {super!r} "
                     "is invalid."
@@ -154,8 +167,8 @@ class Super(node_classes.NodeNG):
                 context=context,
                 super_=exc.super_,
             ) from exc
-        except exceptions.MroError as exc:
-            raise exceptions.AttributeInferenceError(
+        except MroError as exc:
+            raise AttributeInferenceError(
                 (
                     "Lookup for {name} on {target!r} failed because {cls!r} has an "
                     "invalid MRO."
@@ -191,35 +204,39 @@ class Super(node_classes.NodeNG):
                         yield from function.infer_call_result(
                             caller=self, context=context
                         )
-                    except exceptions.InferenceError:
+                    except InferenceError:
                         yield util.Uninferable
                 elif bases._is_property(inferred):
                     # TODO: support other descriptors as well.
                     try:
                         yield from inferred.infer_call_result(self, context)
-                    except exceptions.InferenceError:
+                    except InferenceError:
                         yield util.Uninferable
                 else:
                     yield bases.BoundMethod(inferred, cls)
 
-        if not found:
-            raise exceptions.AttributeInferenceError(
-                target=self, attribute=name, context=context
-            )
+        # Only if we haven't found any explicit overwrites for the
+        # attribute we look it up in the special attributes
+        if not found and name in self.special_attributes:
+            yield self.special_attributes.lookup(name)
+            return
 
-    def getattr(self, name, context=None):
+        if not found:
+            raise AttributeInferenceError(target=self, attribute=name, context=context)
+
+    def getattr(self, name, context: InferenceContext | None = None):
         return list(self.igetattr(name, context=context))
 
 
 class ExceptionInstance(bases.Instance):
-    """Class for instances of exceptions
+    """Class for instances of exceptions.
 
     It has special treatment for some of the exceptions's attributes,
     which are transformed at runtime into certain concrete objects, such as
     the case of .args.
     """
 
-    @decorators.cachedproperty
+    @cached_property
     def special_attributes(self):
         qname = self.qname()
         instance = objectmodel.BUILTIN_EXCEPTIONS.get(
@@ -229,14 +246,13 @@ class ExceptionInstance(bases.Instance):
 
 
 class DictInstance(bases.Instance):
-    """Special kind of instances for dictionaries
+    """Special kind of instances for dictionaries.
 
     This instance knows the underlying object model of the dictionaries, which means
     that methods such as .values or .items can be properly inferred.
     """
 
-    # pylint: disable=unnecessary-lambda
-    special_attributes = util.lazy_descriptor(lambda: objectmodel.DictModel())
+    special_attributes = objectmodel.DictModel()
 
 
 # Custom objects tailored for dictionaries, which are used to
@@ -258,18 +274,44 @@ class DictValues(bases.Proxy):
 
 
 class PartialFunction(scoped_nodes.FunctionDef):
-    """A class representing partial function obtained via functools.partial"""
+    """A class representing partial function obtained via functools.partial."""
 
-    def __init__(
-        self, call, name=None, doc=None, lineno=None, col_offset=None, parent=None
-    ):
-        super().__init__(name, doc, lineno, col_offset, parent)
-        self.filled_positionals = len(call.positional_arguments[1:])
+    def __init__(self, call, name=None, lineno=None, col_offset=None, parent=None):
+        # TODO: Pass end_lineno, end_col_offset and parent as well
+        super().__init__(
+            name,
+            lineno=lineno,
+            col_offset=col_offset,
+            parent=node_classes.Unknown(),
+            end_col_offset=0,
+            end_lineno=0,
+        )
+        # A typical FunctionDef automatically adds its name to the parent scope,
+        # but a partial should not, so defer setting parent until after init
+        self.parent = parent
         self.filled_args = call.positional_arguments[1:]
         self.filled_keywords = call.keyword_arguments
 
-    def infer_call_result(self, caller=None, context=None):
+        wrapped_function = call.positional_arguments[0]
+        inferred_wrapped_function = next(wrapped_function.infer())
+        if isinstance(inferred_wrapped_function, PartialFunction):
+            self.filled_args = inferred_wrapped_function.filled_args + self.filled_args
+            self.filled_keywords = {
+                **inferred_wrapped_function.filled_keywords,
+                **self.filled_keywords,
+            }
+
+        self.filled_positionals = len(self.filled_args)
+
+    def infer_call_result(
+        self,
+        caller: SuccessfulInferenceResult | None,
+        context: InferenceContext | None = None,
+    ) -> Iterator[InferenceResult]:
         if context:
+            assert (
+                context.callcontext
+            ), "CallContext should be set before inferring call result"
             current_passed_keywords = {
                 keyword for (keyword, _) in context.callcontext.keywords
             }
@@ -282,7 +324,7 @@ class PartialFunction(scoped_nodes.FunctionDef):
 
         return super().infer_call_result(caller=caller, context=context)
 
-    def qname(self):
+    def qname(self) -> str:
         return self.__class__.__name__
 
 
@@ -292,23 +334,33 @@ node_classes.Dict.__bases__ = (node_classes.NodeNG, DictInstance)
 
 
 class Property(scoped_nodes.FunctionDef):
-    """Class representing a Python property"""
+    """Class representing a Python property."""
 
-    def __init__(
-        self, function, name=None, doc=None, lineno=None, col_offset=None, parent=None
-    ):
+    def __init__(self, function, name=None, lineno=None, col_offset=None, parent=None):
         self.function = function
-        super().__init__(name, doc, lineno, col_offset, parent)
+        super().__init__(
+            name,
+            lineno=lineno,
+            col_offset=col_offset,
+            parent=parent,
+            end_col_offset=function.end_col_offset,
+            end_lineno=function.end_lineno,
+        )
 
-    # pylint: disable=unnecessary-lambda
-    special_attributes = util.lazy_descriptor(lambda: objectmodel.PropertyModel())
+    special_attributes = objectmodel.PropertyModel()
     type = "property"
 
-    def pytype(self):
-        return "%s.property" % BUILTINS
+    def pytype(self) -> Literal["builtins.property"]:
+        return "builtins.property"
 
-    def infer_call_result(self, caller=None, context=None):
-        raise exceptions.InferenceError("Properties are not callable")
+    def infer_call_result(
+        self,
+        caller: SuccessfulInferenceResult | None,
+        context: InferenceContext | None = None,
+    ) -> NoReturn:
+        raise InferenceError("Properties are not callable")
 
-    def infer(self, context=None, **kwargs):
-        return iter((self,))
+    def _infer(
+        self: _T, context: InferenceContext | None = None, **kwargs: Any
+    ) -> Generator[_T]:
+        yield self

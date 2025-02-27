@@ -1,77 +1,49 @@
+# Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
+
+from __future__ import annotations
+
 import ast
-from collections import namedtuple
-from functools import partial
-from typing import Optional
-import sys
+from typing import NamedTuple
 
-import astroid
-
-_ast_py3 = None
-try:
-    import typed_ast.ast3 as _ast_py3
-except ImportError:
-    pass
+from astroid.const import Context
 
 
-PY38 = sys.version_info[:2] >= (3, 8)
-if PY38:
-    # On Python 3.8, typed_ast was merged back into `ast`
-    _ast_py3 = ast
+class FunctionType(NamedTuple):
+    argtypes: list[ast.expr]
+    returns: ast.expr
 
 
-FunctionType = namedtuple("FunctionType", ["argtypes", "returns"])
+class ParserModule(NamedTuple):
+    unary_op_classes: dict[type[ast.unaryop], str]
+    cmp_op_classes: dict[type[ast.cmpop], str]
+    bool_op_classes: dict[type[ast.boolop], str]
+    bin_op_classes: dict[type[ast.operator], str]
+    context_classes: dict[type[ast.expr_context], Context]
+
+    def parse(
+        self, string: str, type_comments: bool = True, filename: str | None = None
+    ) -> ast.Module:
+        if filename:
+            return ast.parse(string, filename=filename, type_comments=type_comments)
+        return ast.parse(string, type_comments=type_comments)
 
 
-class ParserModule(
-    namedtuple(
-        "ParserModule",
-        [
-            "module",
-            "unary_op_classes",
-            "cmp_op_classes",
-            "bool_op_classes",
-            "bin_op_classes",
-            "context_classes",
-        ],
-    )
-):
-    def parse(self, string: str, type_comments=True):
-        if self.module is _ast_py3:
-            if PY38:
-                parse_func = partial(self.module.parse, type_comments=type_comments)
-            else:
-                parse_func = partial(
-                    self.module.parse, feature_version=sys.version_info.minor
-                )
-        else:
-            parse_func = self.module.parse
-        return parse_func(string)
-
-
-def parse_function_type_comment(type_comment: str) -> Optional[FunctionType]:
-    """Given a correct type comment, obtain a FunctionType object"""
-    if _ast_py3 is None:
-        return None
-
-    func_type = _ast_py3.parse(type_comment, "<type_comment>", "func_type")
+def parse_function_type_comment(type_comment: str) -> FunctionType | None:
+    """Given a correct type comment, obtain a FunctionType object."""
+    func_type = ast.parse(type_comment, "<type_comment>", "func_type")  # type: ignore[attr-defined]
     return FunctionType(argtypes=func_type.argtypes, returns=func_type.returns)
 
 
-def get_parser_module(type_comments=True) -> ParserModule:
-    if not type_comments:
-        parser_module = ast
-    else:
-        parser_module = _ast_py3
-    parser_module = parser_module or ast
-
-    unary_op_classes = _unary_operators_from_module(parser_module)
-    cmp_op_classes = _compare_operators_from_module(parser_module)
-    bool_op_classes = _bool_operators_from_module(parser_module)
-    bin_op_classes = _binary_operators_from_module(parser_module)
-    context_classes = _contexts_from_module(parser_module)
+def get_parser_module(type_comments: bool = True) -> ParserModule:
+    unary_op_classes = _unary_operators_from_module()
+    cmp_op_classes = _compare_operators_from_module()
+    bool_op_classes = _bool_operators_from_module()
+    bin_op_classes = _binary_operators_from_module()
+    context_classes = _contexts_from_module()
 
     return ParserModule(
-        parser_module,
         unary_op_classes,
         cmp_op_classes,
         bool_op_classes,
@@ -80,52 +52,51 @@ def get_parser_module(type_comments=True) -> ParserModule:
     )
 
 
-def _unary_operators_from_module(module):
-    return {module.UAdd: "+", module.USub: "-", module.Not: "not", module.Invert: "~"}
+def _unary_operators_from_module() -> dict[type[ast.unaryop], str]:
+    return {ast.UAdd: "+", ast.USub: "-", ast.Not: "not", ast.Invert: "~"}
 
 
-def _binary_operators_from_module(module):
-    binary_operators = {
-        module.Add: "+",
-        module.BitAnd: "&",
-        module.BitOr: "|",
-        module.BitXor: "^",
-        module.Div: "/",
-        module.FloorDiv: "//",
-        module.MatMult: "@",
-        module.Mod: "%",
-        module.Mult: "*",
-        module.Pow: "**",
-        module.Sub: "-",
-        module.LShift: "<<",
-        module.RShift: ">>",
-    }
-    return binary_operators
-
-
-def _bool_operators_from_module(module):
-    return {module.And: "and", module.Or: "or"}
-
-
-def _compare_operators_from_module(module):
+def _binary_operators_from_module() -> dict[type[ast.operator], str]:
     return {
-        module.Eq: "==",
-        module.Gt: ">",
-        module.GtE: ">=",
-        module.In: "in",
-        module.Is: "is",
-        module.IsNot: "is not",
-        module.Lt: "<",
-        module.LtE: "<=",
-        module.NotEq: "!=",
-        module.NotIn: "not in",
+        ast.Add: "+",
+        ast.BitAnd: "&",
+        ast.BitOr: "|",
+        ast.BitXor: "^",
+        ast.Div: "/",
+        ast.FloorDiv: "//",
+        ast.MatMult: "@",
+        ast.Mod: "%",
+        ast.Mult: "*",
+        ast.Pow: "**",
+        ast.Sub: "-",
+        ast.LShift: "<<",
+        ast.RShift: ">>",
     }
 
 
-def _contexts_from_module(module):
+def _bool_operators_from_module() -> dict[type[ast.boolop], str]:
+    return {ast.And: "and", ast.Or: "or"}
+
+
+def _compare_operators_from_module() -> dict[type[ast.cmpop], str]:
     return {
-        module.Load: astroid.Load,
-        module.Store: astroid.Store,
-        module.Del: astroid.Del,
-        module.Param: astroid.Store,
+        ast.Eq: "==",
+        ast.Gt: ">",
+        ast.GtE: ">=",
+        ast.In: "in",
+        ast.Is: "is",
+        ast.IsNot: "is not",
+        ast.Lt: "<",
+        ast.LtE: "<=",
+        ast.NotEq: "!=",
+        ast.NotIn: "not in",
+    }
+
+
+def _contexts_from_module() -> dict[type[ast.expr_context], Context]:
+    return {
+        ast.Load: Context.Load,
+        ast.Store: Context.Store,
+        ast.Del: Context.Del,
+        ast.Param: Context.Store,
     }

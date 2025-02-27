@@ -11,13 +11,13 @@ try:
     from .cext import Proxy
     from .cext import identity
 except ImportError:
-    from .slots import Proxy
+    from .simple import Proxy
 else:
     copyreg.constructor(identity)
 
 try:
     from ._version import version as __version__
 except ImportError:
-    __version__ = '1.4.3'
+    __version__ = '1.10.0'
 
-__all__ = "Proxy",
+__all__ = ('Proxy',)

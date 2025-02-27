@@ -1,42 +1,33 @@
-# Copyright (c) 2015-2018 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2015-2016 Ceridwen <ceridwenv@gmail.com>
-# Copyright (c) 2018 Bryce Guinta <bryce.paul.guinta@gmail.com>
-# Copyright (c) 2018 Nick Drozd <nicholasdrozd@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
+
+
+from __future__ import annotations
 
 import warnings
-from itertools import islice
+from typing import TYPE_CHECKING, Any, Final, Literal
 
-import importlib
-import lazy_object_proxy
+from astroid.exceptions import InferenceError
 
-
-def lazy_descriptor(obj):
-    class DescriptorProxy(lazy_object_proxy.Proxy):
-        def __get__(self, instance, owner=None):
-            return self.__class__.__get__(self, instance)
-
-    return DescriptorProxy(obj)
+if TYPE_CHECKING:
+    from astroid import bases, nodes
+    from astroid.context import InferenceContext
+    from astroid.typing import InferenceResult
 
 
-def lazy_import(module_name):
-    return lazy_object_proxy.Proxy(
-        lambda: importlib.import_module("." + module_name, "astroid")
-    )
+class UninferableBase:
+    """Special inference object, which is returned when inference fails.
 
+    This is meant to be used as a singleton. Use astroid.util.Uninferable to access it.
+    """
 
-@object.__new__
-class Uninferable:
-    """Special inference object, which is returned when inference fails."""
-
-    def __repr__(self):
+    def __repr__(self) -> Literal["Uninferable"]:
         return "Uninferable"
 
     __str__ = __repr__
 
-    def __getattribute__(self, name):
+    def __getattribute__(self, name: str) -> Any:
         if name == "next":
             raise AttributeError("next method should not be called")
         if name.startswith("__") and name.endswith("__"):
@@ -45,21 +36,23 @@ class Uninferable:
             return object.__getattribute__(self, name)
         return self
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: Any, **kwargs: Any) -> UninferableBase:
         return self
 
-    def __bool__(self):
+    def __bool__(self) -> Literal[False]:
         return False
 
     __nonzero__ = __bool__
 
     def accept(self, visitor):
-        func = getattr(visitor, "visit_uninferable")
-        return func(self)
+        return visitor.visit_uninferable(self)
+
+
+Uninferable: Final = UninferableBase()
 
 
 class BadOperationMessage:
-    """Object which describes a TypeError occurred somewhere in the inference chain
+    """Object which describes a TypeError occurred somewhere in the inference chain.
 
     This is not an exception, but a container object which holds the types and
     the error which occurred.
@@ -76,18 +69,18 @@ class BadUnaryOperationMessage(BadOperationMessage):
 
     @property
     def _object_type_helper(self):
-        helpers = lazy_import("helpers")
+        from astroid import helpers  # pylint: disable=import-outside-toplevel
+
         return helpers.object_type
 
     def _object_type(self, obj):
-        # pylint: disable=not-callable; can't infer lazy_import
         objtype = self._object_type_helper(obj)
-        if objtype is Uninferable:
+        if isinstance(objtype, UninferableBase):
             return None
 
         return objtype
 
-    def __str__(self):
+    def __str__(self) -> str:
         if hasattr(self.operand, "name"):
             operand_type = self.operand.name
         else:
@@ -110,12 +103,12 @@ class BadBinaryOperationMessage(BadOperationMessage):
         self.right_type = right_type
         self.op = op
 
-    def __str__(self):
+    def __str__(self) -> str:
         msg = "unsupported operand type(s) for {}: {!r} and {!r}"
         return msg.format(self.op, self.left_type.name, self.right_type.name)
 
 
-def _instancecheck(cls, other):
+def _instancecheck(cls, other) -> bool:
     wrapped = cls.__wrapped__
     other_cls = other.__class__
     is_instance_of = wrapped is other_cls or issubclass(other_cls, wrapped)
@@ -128,37 +121,39 @@ def _instancecheck(cls, other):
     return is_instance_of
 
 
-def proxy_alias(alias_name, node_type):
-    """Get a Proxy from the given name to the given node type."""
-    proxy = type(
-        alias_name,
-        (lazy_object_proxy.Proxy,),
-        {
-            "__class__": object.__dict__["__class__"],
-            "__instancecheck__": _instancecheck,
-        },
-    )
-    return proxy(lambda: node_type)
+def check_warnings_filter() -> bool:
+    """Return True if any other than the default DeprecationWarning filter is enabled.
 
-
-def limit_inference(iterator, size):
-    """Limit inference amount.
-
-    Limit inference amount to help with performance issues with
-    exponentially exploding possible results.
-
-    :param iterator: Inference generator to limit
-    :type iterator: Iterator(NodeNG)
-
-    :param size: Maximum mount of nodes yielded plus an
-        Uninferable at the end if limit reached
-    :type size: int
-
-    :yields: A possibly modified generator
-    :rtype param: Iterable
+    https://docs.python.org/3/library/warnings.html#default-warning-filter
     """
-    yield from islice(iterator, size)
-    has_more = next(iterator, False)
-    if has_more is not False:
-        yield Uninferable
-        return
+    return any(
+        issubclass(DeprecationWarning, filter[2])
+        and filter[0] != "ignore"
+        and filter[3] != "__main__"
+        for filter in warnings.filters
+    )
+
+
+def safe_infer(
+    node: nodes.NodeNG | bases.Proxy | UninferableBase,
+    context: InferenceContext | None = None,
+) -> InferenceResult | None:
+    """Return the inferred value for the given node.
+
+    Return None if inference failed or if there is some ambiguity (more than
+    one node has been inferred).
+    """
+    if isinstance(node, UninferableBase):
+        return node
+    try:
+        inferit = node.infer(context=context)
+        value = next(inferit)
+    except (InferenceError, StopIteration):
+        return None
+    try:
+        next(inferit)
+        return None  # None if there is ambiguity on the inferred node
+    except InferenceError:
+        return None  # there is some kind of ambiguity
+    except StopIteration:
+        return value

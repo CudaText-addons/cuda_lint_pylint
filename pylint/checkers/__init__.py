@@ -1,20 +1,8 @@
-# Copyright (c) 2006-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
-# Copyright (c) 2013-2014 Google, Inc.
-# Copyright (c) 2013 buck@yelp.com <buck@yelp.com>
-# Copyright (c) 2014-2018 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2014 Brett Cannon <brett@python.org>
-# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
-# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
-# Copyright (c) 2016 Moises Lopez <moylop260@vauxoo.com>
-# Copyright (c) 2017-2018 Bryce Guinta <bryce.paul.guinta@gmail.com>
-# Copyright (c) 2018-2019 Pierre Sassoulas <pierre.sassoulas@gmail.com>
-# Copyright (c) 2018 ssolanki <sushobhitsolanki@gmail.com>
-# Copyright (c) 2019 Bruno P. Kinoshita <kinow@users.noreply.github.com>
-
 # Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+# For details: https://github.com/pylint-dev/pylint/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/pylint/blob/main/CONTRIBUTORS.txt
 
-"""utilities methods and classes for checkers
+"""Utilities methods and classes for checkers.
 
 Base id of standard checkers (used in msg and report ids):
 01: base
@@ -32,36 +20,121 @@ Base id of standard checkers (used in msg and report ids):
 13: string_format
 14: string_constant
 15: stdlib
-16: python3
+16: python3 (This one was deleted but needs to be reserved for consistency with old messages)
 17: refactoring
-18-50: not yet used: reserved for future internal checkers.
+.
+.
+.
+24: non-ascii-names
+25: unicode
+26: unsupported_version
+27: private-import
+28-50: not yet used: reserved for future internal checkers.
+This file is not updated. Use
+   script/get_unused_message_id_category.py
+to get the next free checker id.
+
 51-99: perhaps used: reserved for external checkers
 
 The raw_metrics checker has no number associated since it doesn't emit any
 messages nor reports. XXX not true, emit a 07 report !
-
 """
 
-from pylint.checkers.base_checker import BaseChecker, BaseTokenChecker
-from pylint.utils import register_plugins
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Literal
+
+from pylint.checkers.base_checker import (
+    BaseChecker,
+    BaseRawFileChecker,
+    BaseTokenChecker,
+)
+from pylint.checkers.deprecated import DeprecatedMixin
+from pylint.utils import LinterStats, diff_string, register_plugins
+
+if TYPE_CHECKING:
+    from pylint.lint import PyLinter
 
 
-def table_lines_from_stats(stats, _, columns):
-    """get values listed in <columns> from <stats> and <old_stats>,
-    and return a formated list of values, designed to be given to a
-    ureport.Table object
+def table_lines_from_stats(
+    stats: LinterStats,
+    old_stats: LinterStats | None,
+    stat_type: Literal["duplicated_lines", "message_types"],
+) -> list[str]:
+    """Get values listed in <columns> from <stats> and <old_stats>,
+    and return a formatted list of values.
+
+    The return value is designed to be given to a ureport.Table object
     """
-    lines = []
-    for m_type in columns:
-        new = stats[m_type]
-        new = "%.3f" % new if isinstance(new, float) else str(new)
-        lines += (m_type.replace("_", " "), new, "NC", "NC")
+    lines: list[str] = []
+    if stat_type == "duplicated_lines":
+        new: list[tuple[str, int | float]] = [
+            ("nb_duplicated_lines", stats.duplicated_lines["nb_duplicated_lines"]),
+            (
+                "percent_duplicated_lines",
+                stats.duplicated_lines["percent_duplicated_lines"],
+            ),
+        ]
+        if old_stats:
+            old: list[tuple[str, str | int | float]] = [
+                (
+                    "nb_duplicated_lines",
+                    old_stats.duplicated_lines["nb_duplicated_lines"],
+                ),
+                (
+                    "percent_duplicated_lines",
+                    old_stats.duplicated_lines["percent_duplicated_lines"],
+                ),
+            ]
+        else:
+            old = [("nb_duplicated_lines", "NC"), ("percent_duplicated_lines", "NC")]
+    elif stat_type == "message_types":
+        new = [
+            ("convention", stats.convention),
+            ("refactor", stats.refactor),
+            ("warning", stats.warning),
+            ("error", stats.error),
+        ]
+        if old_stats:
+            old = [
+                ("convention", old_stats.convention),
+                ("refactor", old_stats.refactor),
+                ("warning", old_stats.warning),
+                ("error", old_stats.error),
+            ]
+        else:
+            old = [
+                ("convention", "NC"),
+                ("refactor", "NC"),
+                ("warning", "NC"),
+                ("error", "NC"),
+            ]
+
+    # pylint: disable=possibly-used-before-assignment
+    for index, value in enumerate(new):
+        new_value = value[1]
+        old_value = old[index][1]
+        diff_str = (
+            diff_string(old_value, new_value)
+            if isinstance(old_value, float)
+            else old_value
+        )
+        new_str = f"{new_value:.3f}" if isinstance(new_value, float) else str(new_value)
+        old_str = f"{old_value:.3f}" if isinstance(old_value, float) else str(old_value)
+        lines.extend((value[0].replace("_", " "), new_str, old_str, diff_str))  # type: ignore[arg-type]
     return lines
 
 
-def initialize(linter):
-    """initialize linter with checkers in this package """
+def initialize(linter: PyLinter) -> None:
+    """Initialize linter with checkers in this package."""
     register_plugins(linter, __path__[0])
 
 
-__all__ = ("BaseChecker", "BaseTokenChecker", "initialize")
+__all__ = [
+    "BaseChecker",
+    "BaseTokenChecker",
+    "BaseRawFileChecker",
+    "initialize",
+    "DeprecatedMixin",
+    "register_plugins",
+]

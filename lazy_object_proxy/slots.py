@@ -1,12 +1,12 @@
 import operator
 
-from .compat import PY2
-from .compat import PY3
+from .compat import string_types
 from .compat import with_metaclass
+from .utils import await_
 from .utils import identity
 
 
-class _ProxyMethods(object):
+class _ProxyMethods:
     # We use properties to override the values of __module__ and
     # __doc__. If we add these in ObjectProxy, the derived class
     # __dict__ will still be setup to have string variants of these
@@ -70,6 +70,7 @@ class Proxy(with_metaclass(_ProxyMetaType)):
 
     * ``__factory__`` is the callback that "materializes" the object we proxy to.
     * ``__target__`` will contain the object we proxy to, once it's "materialized".
+    * ``__resolved__`` is a boolean, `True` if factory was called.
     * ``__wrapped__`` is a property that does either:
 
       * return ``__target__`` if it's set.
@@ -82,15 +83,23 @@ class Proxy(with_metaclass(_ProxyMetaType)):
         object.__setattr__(self, '__factory__', factory)
 
     @property
-    def __wrapped__(self, __getattr__=object.__getattribute__, __setattr__=object.__setattr__,
-                    __delattr__=object.__delattr__):
+    def __resolved__(self, __getattr__=object.__getattribute__):
+        try:
+            __getattr__(self, '__target__')
+        except AttributeError:
+            return False
+        else:
+            return True
+
+    @property
+    def __wrapped__(self, __getattr__=object.__getattribute__, __setattr__=object.__setattr__, __delattr__=object.__delattr__):
         try:
             return __getattr__(self, '__target__')
         except AttributeError:
             try:
                 factory = __getattr__(self, '__factory__')
-            except AttributeError:
-                raise ValueError("Proxy hasn't been initiated: __factory__ is missing.")
+            except AttributeError as exc:
+                raise ValueError("Proxy hasn't been initiated: __factory__ is missing.") from exc
             target = factory()
             __setattr__(self, '__target__', target)
             return target
@@ -115,7 +124,7 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     def __class__(self):
         return self.__wrapped__.__class__
 
-    @__class__.setter  # noqa
+    @__class__.setter
     def __class__(self, value):
         self.__wrapped__.__class__ = value
 
@@ -133,31 +142,33 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     def __str__(self):
         return str(self.__wrapped__)
 
-    if PY3:
-        def __bytes__(self):
-            return bytes(self.__wrapped__)
+    def __bytes__(self):
+        return bytes(self.__wrapped__)
 
     def __repr__(self, __getattr__=object.__getattribute__):
         try:
             target = __getattr__(self, '__target__')
         except AttributeError:
-            return '<{} at 0x{:x} with factory {!r}>'.format(
-                type(self).__name__, id(self),
-                self.__factory__
-            )
+            return f'<{type(self).__name__} at 0x{id(self):x} with factory {self.__factory__!r}>'
         else:
-            return '<{} at 0x{:x} wrapping {!r} at 0x{:x} with factory {!r}>'.format(
-                type(self).__name__, id(self),
-                target, id(target),
-                self.__factory__
-            )
+            return f'<{type(self).__name__} at 0x{id(self):x} wrapping {target!r} at 0x{id(target):x} with factory {self.__factory__!r}>'
+
+    def __fspath__(self):
+        wrapped = self.__wrapped__
+        if isinstance(wrapped, string_types):
+            return wrapped
+        else:
+            fspath = getattr(wrapped, '__fspath__', None)
+            if fspath is None:
+                return wrapped
+            else:
+                return fspath()
 
     def __reversed__(self):
         return reversed(self.__wrapped__)
 
-    if PY3:
-        def __round__(self):
-            return round(self.__wrapped__)
+    def __round__(self):
+        return round(self.__wrapped__)
 
     def __lt__(self, other):
         return self.__wrapped__ < other
@@ -213,8 +224,8 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     def __mul__(self, other):
         return self.__wrapped__ * other
 
-    def __div__(self, other):
-        return operator.div(self.__wrapped__, other)
+    def __matmul__(self, other):
+        return self.__wrapped__ @ other
 
     def __truediv__(self, other):
         return operator.truediv(self.__wrapped__, other)
@@ -254,6 +265,9 @@ class Proxy(with_metaclass(_ProxyMetaType)):
 
     def __rmul__(self, other):
         return other * self.__wrapped__
+
+    def __rmatmul__(self, other):
+        return other @ self.__wrapped__
 
     def __rdiv__(self, other):
         return operator.div(other, self.__wrapped__)
@@ -300,8 +314,8 @@ class Proxy(with_metaclass(_ProxyMetaType)):
         self.__wrapped__ *= other
         return self
 
-    def __idiv__(self, other):
-        self.__wrapped__ = operator.idiv(self.__wrapped__, other)
+    def __imatmul__(self, other):
+        self.__wrapped__ @= other
         return self
 
     def __itruediv__(self, other):
@@ -355,10 +369,6 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     def __int__(self):
         return int(self.__wrapped__)
 
-    if PY2:
-        def __long__(self):
-            return long(self.__wrapped__)  # noqa
-
     def __float__(self):
         return float(self.__wrapped__)
 
@@ -369,7 +379,10 @@ class Proxy(with_metaclass(_ProxyMetaType)):
         return hex(self.__wrapped__)
 
     def __index__(self):
-        return operator.index(self.__wrapped__)
+        if hasattr(self.__wrapped__, '__index__'):
+            return operator.index(self.__wrapped__)
+        else:
+            return int(self.__wrapped__)
 
     def __len__(self):
         return len(self.__wrapped__)
@@ -404,6 +417,9 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     def __iter__(self):
         return iter(self.__wrapped__)
 
+    def __next__(self):
+        return next(self.__wrapped__)
+
     def __call__(self, *args, **kwargs):
         return self.__wrapped__(*args, **kwargs)
 
@@ -412,3 +428,12 @@ class Proxy(with_metaclass(_ProxyMetaType)):
 
     def __reduce_ex__(self, protocol):
         return identity, (self.__wrapped__,)
+
+    if await_:
+        from .utils import __aenter__
+        from .utils import __aexit__
+        from .utils import __aiter__
+        from .utils import __anext__
+        from .utils import __await__
+
+        __aiter__, __anext__, __await__, __aenter__, __aexit__  # noqa

@@ -1,116 +1,160 @@
-# Copyright (c) 2006-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
-# Copyright (c) 2013-2014 Google, Inc.
-# Copyright (c) 2013 buck@yelp.com <buck@yelp.com>
-# Copyright (c) 2014-2019 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2014 Brett Cannon <brett@python.org>
-# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
-# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
-# Copyright (c) 2016 Moises Lopez <moylop260@vauxoo.com>
-# Copyright (c) 2017-2018 Bryce Guinta <bryce.paul.guinta@gmail.com>
-# Copyright (c) 2018-2019 Pierre Sassoulas <pierre.sassoulas@gmail.com>
-# Copyright (c) 2018 ssolanki <sushobhitsolanki@gmail.com>
-# Copyright (c) 2019 Bruno P. Kinoshita <kinow@users.noreply.github.com>
-
 # Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+# For details: https://github.com/pylint-dev/pylint/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/pylint/blob/main/CONTRIBUTORS.txt
 
+from __future__ import annotations
+
+import abc
+import functools
+from collections.abc import Iterable, Sequence
 from inspect import cleandoc
-from typing import Any
+from tokenize import TokenInfo
+from typing import TYPE_CHECKING, Any
 
-from pylint.config import OptionsProviderMixIn
-from pylint.constants import _MSG_ORDER, WarningScope
+from astroid import nodes
+
+from pylint.config.arguments_provider import _ArgumentsProvider
+from pylint.constants import _MSG_ORDER, MAIN_CHECKER_NAME, WarningScope
 from pylint.exceptions import InvalidMessageError
-from pylint.interfaces import UNDEFINED, IRawChecker, ITokenChecker, implements
+from pylint.interfaces import Confidence
 from pylint.message.message_definition import MessageDefinition
+from pylint.typing import (
+    ExtraMessageOptions,
+    MessageDefinitionTuple,
+    OptionDict,
+    Options,
+    ReportsCallable,
+)
 from pylint.utils import get_rst_section, get_rst_title
 
+if TYPE_CHECKING:
+    from pylint.lint import PyLinter
 
-class BaseChecker(OptionsProviderMixIn):
 
+@functools.total_ordering
+class BaseChecker(_ArgumentsProvider):
     # checker name (you may reuse an existing one)
-    name = None  # type: str
-    # options level (0 will be displaying in --help, 1 in --long-help)
-    level = 1
+    name: str = ""
     # ordered list of options to control the checker behaviour
-    options = ()  # type: Any
+    options: Options = ()
     # messages issued by this checker
-    msgs = {}  # type: Any
+    msgs: dict[str, MessageDefinitionTuple] = {}
     # reports issued by this checker
-    reports = ()  # type: Any
+    reports: tuple[tuple[str, str, ReportsCallable], ...] = ()
     # mark this checker as enabled or not.
-    enabled = True
+    enabled: bool = True
 
-    def __init__(self, linter=None):
-        """checker instances should have the linter as argument
-
-        :param ILinter linter: is an object implementing ILinter."""
+    def __init__(self, linter: PyLinter) -> None:
+        """Checker instances should have the linter as argument."""
         if self.name is not None:
             self.name = self.name.lower()
-        OptionsProviderMixIn.__init__(self)
         self.linter = linter
+        _ArgumentsProvider.__init__(self, linter)
 
-    def __gt__(self, other):
-        """Permit to sort a list of Checker by name."""
-        return "{}{}".format(self.name, self.msgs).__gt__(
-            "{}{}".format(other.name, other.msgs)
-        )
+    def __gt__(self, other: Any) -> bool:
+        """Permits sorting checkers for stable doc and tests.
 
-    def __repr__(self):
+        The main checker is always the first one, then builtin checkers in alphabetical
+        order, then extension checkers in alphabetical order.
+        """
+        if not isinstance(other, BaseChecker):
+            return False
+        if self.name == MAIN_CHECKER_NAME:
+            return False
+        if other.name == MAIN_CHECKER_NAME:
+            return True
+        self_is_builtin = type(self).__module__.startswith("pylint.checkers")
+        if self_is_builtin ^ type(other).__module__.startswith("pylint.checkers"):
+            return not self_is_builtin
+        return self.name > other.name
+
+    def __eq__(self, other: object) -> bool:
+        """Permit to assert Checkers are equal."""
+        if not isinstance(other, BaseChecker):
+            return False
+        return f"{self.name}{self.msgs}" == f"{other.name}{other.msgs}"
+
+    def __hash__(self) -> int:
+        """Make Checker hashable."""
+        return hash(f"{self.name}{self.msgs}")
+
+    def __repr__(self) -> str:
         status = "Checker" if self.enabled else "Disabled checker"
-        return "{} '{}' (responsible for '{}')".format(
-            status, self.name, "', '".join(self.msgs.keys())
-        )
+        msgs = "', '".join(self.msgs.keys())
+        return f"{status} '{self.name}' (responsible for '{msgs}')"
 
-    def __str__(self):
-        """This might be incomplete because multiple class inheriting BaseChecker
-        can have the same name. Cf MessageHandlerMixIn.get_full_documentation()"""
+    def __str__(self) -> str:
+        """This might be incomplete because multiple classes inheriting BaseChecker
+        can have the same name.
+
+        See: MessageHandlerMixIn.get_full_documentation()
+        """
         return self.get_full_documentation(
-            msgs=self.msgs, options=self.options_and_values(), reports=self.reports
+            msgs=self.msgs, options=self._options_and_values(), reports=self.reports
         )
 
-    def get_full_documentation(self, msgs, options, reports, doc=None, module=None):
+    def get_full_documentation(
+        self,
+        msgs: dict[str, MessageDefinitionTuple],
+        options: Iterable[tuple[str, OptionDict, Any]],
+        reports: Sequence[tuple[str, str, ReportsCallable]],
+        doc: str | None = None,
+        module: str | None = None,
+        show_options: bool = True,
+    ) -> str:
         result = ""
-        checker_title = "%s checker" % (self.name.replace("_", " ").title())
+        checker_title = f"{self.name.replace('_', ' ').title()} checker"
         if module:
             # Provide anchor to link against
-            result += ".. _%s:\n\n" % module
-        result += "%s\n" % get_rst_title(checker_title, "~")
+            result += f".. _{module}:\n\n"
+        result += f"{get_rst_title(checker_title, '~')}\n"
         if module:
-            result += "This checker is provided by ``%s``.\n" % module
-        result += "Verbatim name of the checker is ``%s``.\n\n" % self.name
+            result += f"This checker is provided by ``{module}``.\n"
+        result += f"Verbatim name of the checker is ``{self.name}``.\n\n"
         if doc:
             # Provide anchor to link against
-            result += get_rst_title("{} Documentation".format(checker_title), "^")
-            result += "%s\n\n" % cleandoc(doc)
-        # options might be an empty generator and not be False when casted to boolean
-        options = list(options)
-        if options:
-            result += get_rst_title("{} Options".format(checker_title), "^")
-            result += "%s\n" % get_rst_section(None, options)
+            result += get_rst_title(f"{checker_title} Documentation", "^")
+            result += f"{cleandoc(doc)}\n\n"
+        # options might be an empty generator and not be False when cast to boolean
+        options_list = list(options)
+        if options_list:
+            if show_options:
+                result += get_rst_title(f"{checker_title} Options", "^")
+                result += f"{get_rst_section(None, options_list)}\n"
+            else:
+                result += f"See also :ref:`{self.name} checker's options' documentation <{self.name}-options>`\n\n"
         if msgs:
-            result += get_rst_title("{} Messages".format(checker_title), "^")
+            result += get_rst_title(f"{checker_title} Messages", "^")
             for msgid, msg in sorted(
                 msgs.items(), key=lambda kv: (_MSG_ORDER.index(kv[0][0]), kv[1])
             ):
-                msg = self.create_message_definition_from_tuple(msgid, msg)
-                result += "%s\n" % msg.format_help(checkerref=False)
+                msg_def = self.create_message_definition_from_tuple(msgid, msg)
+                result += f"{msg_def.format_help(checkerref=False)}\n"
             result += "\n"
         if reports:
-            result += get_rst_title("{} Reports".format(checker_title), "^")
+            result += get_rst_title(f"{checker_title} Reports", "^")
             for report in reports:
-                result += ":%s: %s\n" % report[:2]
+                result += f":{report[0]}: {report[1]}\n"
             result += "\n"
         result += "\n"
         return result
 
     def add_message(
-        self, msgid, line=None, node=None, args=None, confidence=None, col_offset=None
-    ):
-        if not confidence:
-            confidence = UNDEFINED
-        self.linter.add_message(msgid, line, node, args, confidence, col_offset)
+        self,
+        msgid: str,
+        line: int | None = None,
+        node: nodes.NodeNG | None = None,
+        args: Any = None,
+        confidence: Confidence | None = None,
+        col_offset: int | None = None,
+        end_lineno: int | None = None,
+        end_col_offset: int | None = None,
+    ) -> None:
+        self.linter.add_message(
+            msgid, line, node, args, confidence, col_offset, end_lineno, end_col_offset
+        )
 
-    def check_consistency(self):
+    def check_consistency(self) -> None:
         """Check the consistency of msgid.
 
         msg ids for a checker should be a string of len 4, where the two first
@@ -118,34 +162,38 @@ class BaseChecker(OptionsProviderMixIn):
         checker.
 
         :raises InvalidMessageError: If the checker id in the messages are not
-        always the same. """
+        always the same.
+        """
         checker_id = None
         existing_ids = []
         for message in self.messages:
+            # Id's for shared messages such as the 'deprecated-*' messages
+            # can be inconsistent with their checker id.
+            if message.shared:
+                continue
             if checker_id is not None and checker_id != message.msgid[1:3]:
                 error_msg = "Inconsistent checker part in message id "
-                error_msg += "'{}' (expected 'x{checker_id}xx' ".format(
-                    message.msgid, checker_id=checker_id
-                )
-                error_msg += "because we already had {existing_ids}).".format(
-                    existing_ids=existing_ids
-                )
+                error_msg += f"'{message.msgid}' (expected 'x{checker_id}xx' "
+                error_msg += f"because we already had {existing_ids})."
                 raise InvalidMessageError(error_msg)
             checker_id = message.msgid[1:3]
             existing_ids.append(message.msgid)
 
-    def create_message_definition_from_tuple(self, msgid, msg_tuple):
-        if implements(self, (IRawChecker, ITokenChecker)):
+    def create_message_definition_from_tuple(
+        self, msgid: str, msg_tuple: MessageDefinitionTuple
+    ) -> MessageDefinition:
+        if isinstance(self, (BaseTokenChecker, BaseRawFileChecker)):
             default_scope = WarningScope.LINE
         else:
             default_scope = WarningScope.NODE
-        options = {}
-        if len(msg_tuple) > 3:
-            (msg, symbol, descr, options) = msg_tuple
-        elif len(msg_tuple) > 2:
+        options: ExtraMessageOptions = {}
+        if len(msg_tuple) == 4:
+            (msg, symbol, descr, msg_options) = msg_tuple
+            options = ExtraMessageOptions(**msg_options)
+        elif len(msg_tuple) == 3:
             (msg, symbol, descr) = msg_tuple
         else:
-            error_msg = """Messages should have a msgid and a symbol. Something like this :
+            error_msg = """Messages should have a msgid, a symbol and a description. Something like this :
 
 "W1234": (
     "message",
@@ -159,32 +207,42 @@ class BaseChecker(OptionsProviderMixIn):
         return MessageDefinition(self, msgid, msg, descr, symbol, **options)
 
     @property
-    def messages(self) -> list:
+    def messages(self) -> list[MessageDefinition]:
         return [
             self.create_message_definition_from_tuple(msgid, msg_tuple)
             for msgid, msg_tuple in sorted(self.msgs.items())
         ]
 
-    # dummy methods implementing the IChecker interface
+    def open(self) -> None:
+        """Called before visiting project (i.e. set of modules)."""
 
-    def get_message_definition(self, msgid):
-        for message_definition in self.messages:
-            if message_definition.msgid == msgid:
-                return message_definition
-        error_msg = "MessageDefinition for '{}' does not exists. ".format(msgid)
-        error_msg += "Choose from {}.".format([m.msgid for m in self.messages])
-        raise InvalidMessageError(error_msg)
+    def close(self) -> None:
+        """Called after visiting project (i.e set of modules)."""
 
-    def open(self):
-        """called before visiting project (i.e set of modules)"""
+    def get_map_data(self) -> Any:
+        return None
 
-    def close(self):
-        """called after visiting project (i.e set of modules)"""
+    # pylint: disable-next=unused-argument
+    def reduce_map_data(self, linter: PyLinter, data: list[Any]) -> None:
+        return None
 
 
 class BaseTokenChecker(BaseChecker):
     """Base class for checkers that want to have access to the token stream."""
 
-    def process_tokens(self, tokens):
+    @abc.abstractmethod
+    def process_tokens(self, tokens: list[TokenInfo]) -> None:
         """Should be overridden by subclasses."""
+        raise NotImplementedError()
+
+
+class BaseRawFileChecker(BaseChecker):
+    """Base class for checkers which need to parse the raw file."""
+
+    @abc.abstractmethod
+    def process_module(self, node: nodes.Module) -> None:
+        """Process a module.
+
+        The module's content is accessible via ``astroid.stream``
+        """
         raise NotImplementedError()

@@ -1,34 +1,29 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) 2014-2015 Bruno Daniel <bruno.daniel@blue-yonder.com>
-# Copyright (c) 2015-2019 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2016-2019 Ashley Whetter <ashley@awhetter.co.uk>
-# Copyright (c) 2016 Glenn Matthews <glenn@e-dad.net>
-# Copyright (c) 2016 Glenn Matthews <glmatthe@cisco.com>
-# Copyright (c) 2016 Moises Lopez <moylop260@vauxoo.com>
-# Copyright (c) 2017 Ville Skyttä <ville.skytta@iki.fi>
-# Copyright (c) 2017 John Paraskevopoulos <io.paraskev@gmail.com>
-# Copyright (c) 2018, 2020 Anthony Sottile <asottile@umich.edu>
-# Copyright (c) 2018 Jim Robertson <jrobertson98atx@gmail.com>
-# Copyright (c) 2018 Sushobhit <31987769+sushobhit27@users.noreply.github.com>
-# Copyright (c) 2018 Adam Dangoor <adamdangoor@gmail.com>
-# Copyright (c) 2019 Hugo van Kemenade <hugovk@users.noreply.github.com>
-# Copyright (c) 2019 Pierre Sassoulas <pierre.sassoulas@gmail.com>
-
 # Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+# For details: https://github.com/pylint-dev/pylint/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/pylint/blob/main/CONTRIBUTORS.txt
 
-"""Pylint plugin for checking in Sphinx, Google, or Numpy style docstrings
-"""
+"""Pylint plugin for checking in Sphinx, Google, or Numpy style docstrings."""
+
+from __future__ import annotations
+
+import re
+from typing import TYPE_CHECKING
+
 import astroid
+from astroid import nodes
 
-import pylint.extensions._check_docs_utils as utils
 from pylint.checkers import BaseChecker
 from pylint.checkers import utils as checker_utils
-from pylint.interfaces import IAstroidChecker
+from pylint.extensions import _check_docs_utils as utils
+from pylint.extensions._check_docs_utils import Docstring
+from pylint.interfaces import HIGH
+
+if TYPE_CHECKING:
+    from pylint.lint import PyLinter
 
 
 class DocstringParameterChecker(BaseChecker):
-    """Checker for Sphinx, Google, or Numpy style docstrings
+    """Checker for Sphinx, Google, or Numpy style docstrings.
 
     * Check that all function, method and constructor parameters are mentioned
       in the params and types part of the docstring.  Constructor parameters
@@ -45,13 +40,8 @@ class DocstringParameterChecker(BaseChecker):
 
         load-plugins=pylint.extensions.docparams
 
-    to the ``MASTER`` section of your ``.pylintrc``.
-
-    :param linter: linter object
-    :type linter: :class:`pylint.lint.PyLinter`
+    to the ``MAIN`` section of your ``.pylintrc``.
     """
-
-    __implements__ = IAstroidChecker
 
     name = "parameter_documentation"
     msgs = {
@@ -123,6 +113,21 @@ class DocstringParameterChecker(BaseChecker):
             "differing-type-doc",
             "Please check parameter names in type declarations.",
         ),
+        "W9019": (
+            '"%s" useless ignored parameter documentation',
+            "useless-param-doc",
+            "Please remove the ignored parameter documentation.",
+        ),
+        "W9020": (
+            '"%s" useless ignored parameter type documentation',
+            "useless-type-doc",
+            "Please remove the ignored parameter type documentation.",
+        ),
+        "W9021": (
+            'Missing any documentation in "%s"',
+            "missing-any-param-doc",
+            "Please add parameter and/or type documentation.",
+        ),
     }
 
     options = (
@@ -174,6 +179,7 @@ class DocstringParameterChecker(BaseChecker):
             {
                 "type": "choice",
                 "default": "default",
+                "metavar": "<docstring type>",
                 "choices": list(utils.DOCSTRING_TYPES),
                 "help": "If the docstring type cannot be guessed "
                 "the specified docstring type will be used.",
@@ -181,29 +187,48 @@ class DocstringParameterChecker(BaseChecker):
         ),
     )
 
-    priority = -2
-
     constructor_names = {"__init__", "__new__"}
     not_needed_param_in_docstring = {"self", "cls"}
 
-    def visit_functiondef(self, node):
+    def visit_functiondef(self, node: nodes.FunctionDef) -> None:
         """Called for function and method definitions (def).
 
         :param node: Node for a function or method definition in the AST
         :type node: :class:`astroid.scoped_nodes.Function`
         """
-        node_doc = utils.docstringify(node.doc, self.config.default_docstring_type)
+        if checker_utils.is_overload_stub(node):
+            return
+
+        node_doc = utils.docstringify(
+            node.doc_node, self.linter.config.default_docstring_type
+        )
+
+        # skip functions that match the 'no-docstring-rgx' config option
+        no_docstring_rgx = self.linter.config.no_docstring_rgx
+        if no_docstring_rgx and re.match(no_docstring_rgx, node.name):
+            return
+
+        # skip functions smaller than 'docstring-min-length'
+        lines = checker_utils.get_node_last_lineno(node) - node.lineno
+        max_lines = self.linter.config.docstring_min_length
+        if max_lines > -1 and lines < max_lines:
+            return
+
         self.check_functiondef_params(node, node_doc)
         self.check_functiondef_returns(node, node_doc)
         self.check_functiondef_yields(node, node_doc)
 
-    def check_functiondef_params(self, node, node_doc):
+    visit_asyncfunctiondef = visit_functiondef
+
+    def check_functiondef_params(
+        self, node: nodes.FunctionDef, node_doc: Docstring
+    ) -> None:
         node_allow_no_param = None
         if node.name in self.constructor_names:
             class_node = checker_utils.node_frame_class(node)
             if class_node is not None:
                 class_doc = utils.docstringify(
-                    class_node.doc, self.config.default_docstring_type
+                    class_node.doc_node, self.linter.config.default_docstring_type
                 )
                 self.check_single_constructor_params(class_doc, node_doc, class_node)
 
@@ -228,7 +253,9 @@ class DocstringParameterChecker(BaseChecker):
             node_doc, node.args, node, node_allow_no_param
         )
 
-    def check_functiondef_returns(self, node, node_doc):
+    def check_functiondef_returns(
+        self, node: nodes.FunctionDef, node_doc: Docstring
+    ) -> None:
         if (not node_doc.supports_yields and node.is_generator()) or node.is_abstract():
             return
 
@@ -236,9 +263,11 @@ class DocstringParameterChecker(BaseChecker):
         if (node_doc.has_returns() or node_doc.has_rtype()) and not any(
             utils.returns_something(ret_node) for ret_node in return_nodes
         ):
-            self.add_message("redundant-returns-doc", node=node)
+            self.add_message("redundant-returns-doc", node=node, confidence=HIGH)
 
-    def check_functiondef_yields(self, node, node_doc):
+    def check_functiondef_yields(
+        self, node: nodes.FunctionDef, node_doc: Docstring
+    ) -> None:
         if not node_doc.supports_yields or node.is_abstract():
             return
 
@@ -247,9 +276,14 @@ class DocstringParameterChecker(BaseChecker):
         ) and not node.is_generator():
             self.add_message("redundant-yields-doc", node=node)
 
-    def visit_raise(self, node):
+    def visit_raise(self, node: nodes.Raise) -> None:
         func_node = node.frame()
         if not isinstance(func_node, astroid.FunctionDef):
+            return
+
+        # skip functions that match the 'no-docstring-rgx' config option
+        no_docstring_rgx = self.linter.config.no_docstring_rgx
+        if no_docstring_rgx and re.match(no_docstring_rgx, func_node.name):
             return
 
         expected_excs = utils.possible_exc_types(node)
@@ -257,57 +291,89 @@ class DocstringParameterChecker(BaseChecker):
         if not expected_excs:
             return
 
-        if not func_node.doc:
+        if not func_node.doc_node:
             # If this is a property setter,
             # the property should have the docstring instead.
             property_ = utils.get_setters_property(func_node)
             if property_:
                 func_node = property_
 
-        doc = utils.docstringify(func_node.doc, self.config.default_docstring_type)
-        if not doc.is_valid():
+        doc = utils.docstringify(
+            func_node.doc_node, self.linter.config.default_docstring_type
+        )
+
+        if self.linter.config.accept_no_raise_doc and not doc.exceptions():
+            return
+
+        if not doc.matching_sections():
             if doc.doc:
-                self._handle_no_raise_doc(expected_excs, func_node)
+                missing = {exc.name for exc in expected_excs}
+                self._add_raise_message(missing, func_node)
             return
 
         found_excs_full_names = doc.exceptions()
 
         # Extract just the class name, e.g. "error" from "re.error"
         found_excs_class_names = {exc.split(".")[-1] for exc in found_excs_full_names}
-        missing_excs = expected_excs - found_excs_class_names
+
+        missing_excs = set()
+        for expected in expected_excs:
+            for found_exc in found_excs_class_names:
+                if found_exc == expected.name:
+                    break
+                if found_exc == "error" and expected.name == "PatternError":
+                    # Python 3.13: re.error aliases re.PatternError
+                    break
+                if any(found_exc == ancestor.name for ancestor in expected.ancestors()):
+                    break
+            else:
+                missing_excs.add(expected.name)
+
         self._add_raise_message(missing_excs, func_node)
 
-    def visit_return(self, node):
+    def visit_return(self, node: nodes.Return) -> None:
         if not utils.returns_something(node):
             return
 
-        func_node = node.frame()
-        if not isinstance(func_node, astroid.FunctionDef):
+        if self.linter.config.accept_no_return_doc:
             return
 
-        doc = utils.docstringify(func_node.doc, self.config.default_docstring_type)
-        if not doc.is_valid() and self.config.accept_no_return_doc:
+        func_node: astroid.FunctionDef = node.frame()
+
+        # skip functions that match the 'no-docstring-rgx' config option
+        no_docstring_rgx = self.linter.config.no_docstring_rgx
+        if no_docstring_rgx and re.match(no_docstring_rgx, func_node.name):
             return
+
+        doc = utils.docstringify(
+            func_node.doc_node, self.linter.config.default_docstring_type
+        )
 
         is_property = checker_utils.decorated_with_property(func_node)
 
         if not (doc.has_returns() or (doc.has_property_returns() and is_property)):
-            self.add_message("missing-return-doc", node=func_node)
+            self.add_message("missing-return-doc", node=func_node, confidence=HIGH)
 
-        if func_node.returns:
+        if func_node.returns or func_node.type_comment_returns:
             return
 
         if not (doc.has_rtype() or (doc.has_property_type() and is_property)):
-            self.add_message("missing-return-type-doc", node=func_node)
+            self.add_message("missing-return-type-doc", node=func_node, confidence=HIGH)
 
-    def visit_yield(self, node):
-        func_node = node.frame()
-        if not isinstance(func_node, astroid.FunctionDef):
+    def visit_yield(self, node: nodes.Yield | nodes.YieldFrom) -> None:
+        if self.linter.config.accept_no_yields_doc:
             return
 
-        doc = utils.docstringify(func_node.doc, self.config.default_docstring_type)
-        if not doc.is_valid() and self.config.accept_no_yields_doc:
+        func_node: astroid.FunctionDef = node.frame()
+
+        # skip functions that match the 'no-docstring-rgx' config option
+        no_docstring_rgx = self.linter.config.no_docstring_rgx
+        if no_docstring_rgx and re.match(no_docstring_rgx, func_node.name):
             return
+
+        doc = utils.docstringify(
+            func_node.doc_node, self.linter.config.default_docstring_type
+        )
 
         if doc.supports_yields:
             doc_has_yields = doc.has_yields()
@@ -317,70 +383,86 @@ class DocstringParameterChecker(BaseChecker):
             doc_has_yields_type = doc.has_rtype()
 
         if not doc_has_yields:
-            self.add_message("missing-yield-doc", node=func_node)
+            self.add_message("missing-yield-doc", node=func_node, confidence=HIGH)
 
-        if not (doc_has_yields_type or func_node.returns):
-            self.add_message("missing-yield-type-doc", node=func_node)
+        if not (
+            doc_has_yields_type or func_node.returns or func_node.type_comment_returns
+        ):
+            self.add_message("missing-yield-type-doc", node=func_node, confidence=HIGH)
 
-    def visit_yieldfrom(self, node):
-        self.visit_yield(node)
+    visit_yieldfrom = visit_yield
 
     def _compare_missing_args(
         self,
-        found_argument_names,
-        message_id,
-        not_needed_names,
-        expected_argument_names,
-        warning_node,
-    ):
+        found_argument_names: set[str],
+        message_id: str,
+        not_needed_names: set[str],
+        expected_argument_names: set[str],
+        warning_node: nodes.NodeNG,
+    ) -> None:
         """Compare the found argument names with the expected ones and
         generate a message if there are arguments missing.
 
-        :param set found_argument_names: argument names found in the
-            docstring
+        :param found_argument_names: argument names found in the docstring
 
-        :param str message_id: pylint message id
+        :param message_id: pylint message id
 
         :param not_needed_names: names that may be omitted
-        :type not_needed_names: set of str
 
-        :param set expected_argument_names: Expected argument names
-        :param NodeNG warning_node: The node to be analyzed
+        :param expected_argument_names: Expected argument names
+
+        :param warning_node: The node to be analyzed
         """
-        missing_argument_names = (
+        potential_missing_argument_names = (
             expected_argument_names - found_argument_names
         ) - not_needed_names
+
+        # Handle variadic and keyword args without asterisks
+        missing_argument_names = set()
+        for name in potential_missing_argument_names:
+            if name.replace("*", "") in found_argument_names:
+                continue
+            missing_argument_names.add(name)
+
         if missing_argument_names:
             self.add_message(
                 message_id,
                 args=(", ".join(sorted(missing_argument_names)),),
                 node=warning_node,
+                confidence=HIGH,
             )
 
     def _compare_different_args(
         self,
-        found_argument_names,
-        message_id,
-        not_needed_names,
-        expected_argument_names,
-        warning_node,
-    ):
+        found_argument_names: set[str],
+        message_id: str,
+        not_needed_names: set[str],
+        expected_argument_names: set[str],
+        warning_node: nodes.NodeNG,
+    ) -> None:
         """Compare the found argument names with the expected ones and
         generate a message if there are extra arguments found.
 
-        :param set found_argument_names: argument names found in the
-            docstring
+        :param found_argument_names: argument names found in the docstring
 
-        :param str message_id: pylint message id
+        :param message_id: pylint message id
 
         :param not_needed_names: names that may be omitted
-        :type not_needed_names: set of str
 
-        :param set expected_argument_names: Expected argument names
-        :param NodeNG warning_node: The node to be analyzed
+        :param expected_argument_names: Expected argument names
+
+        :param warning_node: The node to be analyzed
         """
+        # Handle variadic and keyword args without asterisks
+        modified_expected_argument_names: set[str] = set()
+        for name in expected_argument_names:
+            if name.replace("*", "") in found_argument_names:
+                modified_expected_argument_names.add(name.replace("*", ""))
+            else:
+                modified_expected_argument_names.add(name)
+
         differing_argument_names = (
-            (expected_argument_names ^ found_argument_names)
+            (modified_expected_argument_names ^ found_argument_names)
             - not_needed_names
             - expected_argument_names
         )
@@ -390,15 +472,43 @@ class DocstringParameterChecker(BaseChecker):
                 message_id,
                 args=(", ".join(sorted(differing_argument_names)),),
                 node=warning_node,
+                confidence=HIGH,
+            )
+
+    def _compare_ignored_args(  # pylint: disable=useless-param-doc
+        self,
+        found_argument_names: set[str],
+        message_id: str,
+        ignored_argument_names: set[str],
+        warning_node: nodes.NodeNG,
+    ) -> None:
+        """Compare the found argument names with the ignored ones and
+        generate a message if there are ignored arguments found.
+
+        :param found_argument_names: argument names found in the docstring
+        :param message_id: pylint message id
+        :param ignored_argument_names: Expected argument names
+        :param warning_node: The node to be analyzed
+        """
+        existing_ignored_argument_names = ignored_argument_names & found_argument_names
+
+        if existing_ignored_argument_names:
+            self.add_message(
+                message_id,
+                args=(", ".join(sorted(existing_ignored_argument_names)),),
+                node=warning_node,
+                confidence=HIGH,
             )
 
     def check_arguments_in_docstring(
-        self, doc, arguments_node, warning_node, accept_no_param_doc=None
-    ):
-        """Check that all parameters in a function, method or class constructor
-        on the one hand and the parameters mentioned in the parameter
-        documentation (e.g. the Sphinx tags 'param' and 'type') on the other
-        hand are consistent with each other.
+        self,
+        doc: Docstring,
+        arguments_node: astroid.Arguments,
+        warning_node: astroid.NodeNG,
+        accept_no_param_doc: bool | None = None,
+    ) -> None:
+        """Check that all parameters are consistent with the parameters mentioned
+        in the parameter documentation (e.g. the Sphinx tags 'param' and 'type').
 
         * Undocumented parameters except 'self' are noticed.
         * Undocumented parameter types except for 'self' and the ``*<args>``
@@ -406,7 +516,7 @@ class DocstringParameterChecker(BaseChecker):
         * Parameters mentioned in the parameter documentation that don't or no
           longer exist in the function parameter list are noticed.
         * If the text "For the parameters, see" or "For the other parameters,
-          see" (ignoring additional whitespace) is mentioned in the docstring,
+          see" (ignoring additional white-space) is mentioned in the docstring,
           missing parameter documentation is tolerated.
         * If there's no Sphinx style, Google style or NumPy style parameter
           documentation at all, i.e. ``:param`` is never mentioned etc., the
@@ -423,9 +533,8 @@ class DocstringParameterChecker(BaseChecker):
         :param warning_node: The node to assign the warnings to
         :type warning_node: :class:`astroid.scoped_nodes.Node`
 
-        :param accept_no_param_doc: Whether or not to allow no parameters
-            to be documented.
-            If None then this value is read from the configuration.
+        :param accept_no_param_doc: Whether to allow no parameters to be
+            documented. If None then this value is read from the configuration.
         :type accept_no_param_doc: bool or None
         """
         # Tolerate missing param or type declarations if there is a link to
@@ -434,50 +543,80 @@ class DocstringParameterChecker(BaseChecker):
             return
 
         if accept_no_param_doc is None:
-            accept_no_param_doc = self.config.accept_no_param_doc
+            accept_no_param_doc = self.linter.config.accept_no_param_doc
         tolerate_missing_params = doc.params_documented_elsewhere()
 
         # Collect the function arguments.
         expected_argument_names = {arg.name for arg in arguments_node.args}
-        expected_argument_names.update(arg.name for arg in arguments_node.kwonlyargs)
+        expected_argument_names.update(
+            a.name for a in arguments_node.posonlyargs + arguments_node.kwonlyargs
+        )
         not_needed_type_in_docstring = self.not_needed_param_in_docstring.copy()
 
-        if arguments_node.vararg is not None:
-            expected_argument_names.add(arguments_node.vararg)
-            not_needed_type_in_docstring.add(arguments_node.vararg)
-        if arguments_node.kwarg is not None:
-            expected_argument_names.add(arguments_node.kwarg)
-            not_needed_type_in_docstring.add(arguments_node.kwarg)
-        params_with_doc, params_with_type = doc.match_param_docs()
+        expected_but_ignored_argument_names = set()
+        ignored_argument_names = self.linter.config.ignored_argument_names
+        if ignored_argument_names:
+            expected_but_ignored_argument_names = {
+                arg
+                for arg in expected_argument_names
+                if ignored_argument_names.match(arg)
+            }
 
+        if arguments_node.vararg is not None:
+            expected_argument_names.add(f"*{arguments_node.vararg}")
+            not_needed_type_in_docstring.add(f"*{arguments_node.vararg}")
+        if arguments_node.kwarg is not None:
+            expected_argument_names.add(f"**{arguments_node.kwarg}")
+            not_needed_type_in_docstring.add(f"**{arguments_node.kwarg}")
+        params_with_doc, params_with_type = doc.match_param_docs()
         # Tolerate no parameter documentation at all.
         if not params_with_doc and not params_with_type and accept_no_param_doc:
             tolerate_missing_params = True
 
-        if not tolerate_missing_params:
-            self._compare_missing_args(
-                params_with_doc,
-                "missing-param-doc",
-                self.not_needed_param_in_docstring,
-                expected_argument_names,
-                warning_node,
-            )
-
-        for index, arg_name in enumerate(arguments_node.args):
-            if arguments_node.annotations[index]:
-                params_with_type.add(arg_name.name)
-        for index, arg_name in enumerate(arguments_node.kwonlyargs):
-            if arguments_node.kwonlyargs_annotations[index]:
-                params_with_type.add(arg_name.name)
+        # This is before the update of params_with_type because this must check only
+        # the type documented in a docstring, not the one using pep484
+        # See #4117 and #4593
+        self._compare_ignored_args(
+            params_with_type,
+            "useless-type-doc",
+            expected_but_ignored_argument_names,
+            warning_node,
+        )
+        params_with_type |= utils.args_with_annotation(arguments_node)
 
         if not tolerate_missing_params:
-            self._compare_missing_args(
-                params_with_type,
-                "missing-type-doc",
-                not_needed_type_in_docstring,
-                expected_argument_names,
-                warning_node,
+            missing_param_doc = (expected_argument_names - params_with_doc) - (
+                self.not_needed_param_in_docstring | expected_but_ignored_argument_names
             )
+            missing_type_doc = (expected_argument_names - params_with_type) - (
+                not_needed_type_in_docstring | expected_but_ignored_argument_names
+            )
+            if (
+                missing_param_doc == expected_argument_names == missing_type_doc
+                and len(expected_argument_names) != 0
+            ):
+                self.add_message(
+                    "missing-any-param-doc",
+                    args=(warning_node.name,),
+                    node=warning_node,
+                    confidence=HIGH,
+                )
+            else:
+                self._compare_missing_args(
+                    params_with_doc,
+                    "missing-param-doc",
+                    self.not_needed_param_in_docstring
+                    | expected_but_ignored_argument_names,
+                    expected_argument_names,
+                    warning_node,
+                )
+                self._compare_missing_args(
+                    params_with_type,
+                    "missing-type-doc",
+                    not_needed_type_in_docstring | expected_but_ignored_argument_names,
+                    expected_argument_names,
+                    warning_node,
+                )
 
         self._compare_different_args(
             params_with_doc,
@@ -493,47 +632,45 @@ class DocstringParameterChecker(BaseChecker):
             expected_argument_names,
             warning_node,
         )
+        self._compare_ignored_args(
+            params_with_doc,
+            "useless-param-doc",
+            expected_but_ignored_argument_names,
+            warning_node,
+        )
 
-    def check_single_constructor_params(self, class_doc, init_doc, class_node):
+    def check_single_constructor_params(
+        self, class_doc: Docstring, init_doc: Docstring, class_node: nodes.ClassDef
+    ) -> None:
         if class_doc.has_params() and init_doc.has_params():
             self.add_message(
-                "multiple-constructor-doc", args=(class_node.name,), node=class_node
+                "multiple-constructor-doc",
+                args=(class_node.name,),
+                node=class_node,
+                confidence=HIGH,
             )
 
-    def _handle_no_raise_doc(self, excs, node):
-        if self.config.accept_no_raise_doc:
-            return
+    def _add_raise_message(
+        self, missing_exceptions: set[str], node: nodes.FunctionDef
+    ) -> None:
+        """Adds a message on :param:`node` for the missing exception type.
 
-        self._add_raise_message(excs, node)
-
-    def _add_raise_message(self, missing_excs, node):
-        """
-        Adds a message on :param:`node` for the missing exception type.
-
-        :param missing_excs: A list of missing exception types.
-        :type missing_excs: set(str)
-
-        :param node: The node show the message on.
-        :type node: astroid.node_classes.NodeNG
+        :param missing_exceptions: A list of missing exception types.
+        :param node: The node to show the message on.
         """
         if node.is_abstract():
             try:
-                missing_excs.remove("NotImplementedError")
+                missing_exceptions.remove("NotImplementedError")
             except KeyError:
                 pass
+        if missing_exceptions:
+            self.add_message(
+                "missing-raises-doc",
+                args=(", ".join(sorted(missing_exceptions)),),
+                node=node,
+                confidence=HIGH,
+            )
 
-        if not missing_excs:
-            return
 
-        self.add_message(
-            "missing-raises-doc", args=(", ".join(sorted(missing_excs)),), node=node
-        )
-
-
-def register(linter):
-    """Required method to auto register this checker.
-
-    :param linter: Main interface object for Pylint plugins
-    :type linter: Pylint object
-    """
+def register(linter: PyLinter) -> None:
     linter.register_checker(DocstringParameterChecker(linter))

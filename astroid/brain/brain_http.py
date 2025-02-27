@@ -1,22 +1,23 @@
-# Copyright (c) 2018-2019 Claudiu Popa <pcmanticore@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
 
 """Astroid brain hints for some of the `http` module."""
 import textwrap
 
-import astroid
+from astroid.brain.helpers import register_module_extender
 from astroid.builder import AstroidBuilder
+from astroid.manager import AstroidManager
 
 
 def _http_transform():
     code = textwrap.dedent(
         """
+    from enum import IntEnum
     from collections import namedtuple
     _HTTPStatus = namedtuple('_HTTPStatus', 'value phrase description')
 
-    class HTTPStatus:
+    class HTTPStatus(IntEnum):
 
         @property
         def phrase(self):
@@ -136,11 +137,11 @@ def _http_transform():
             'The client needs to authenticate to gain network access')
     """
     )
-    return AstroidBuilder(astroid.MANAGER).string_build(code)
+    return AstroidBuilder(AstroidManager()).string_build(code)
 
 
 def _http_client_transform():
-    return AstroidBuilder(astroid.MANAGER).string_build(
+    return AstroidBuilder(AstroidManager()).string_build(
         textwrap.dedent(
             """
     from http import HTTPStatus
@@ -207,5 +208,6 @@ def _http_client_transform():
     )
 
 
-astroid.register_module_extender(astroid.MANAGER, "http", _http_transform)
-astroid.register_module_extender(astroid.MANAGER, "http.client", _http_client_transform)
+def register(manager: AstroidManager) -> None:
+    register_module_extender(manager, "http", _http_transform)
+    register_module_extender(manager, "http.client", _http_client_transform)

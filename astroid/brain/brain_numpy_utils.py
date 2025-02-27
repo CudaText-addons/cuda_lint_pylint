@@ -1,22 +1,45 @@
-# Copyright (c) 2019-2020 hippo91 <guillaume.peillex@gmail.com>
-# Copyright (c) 2019 Claudiu Popa <pcmanticore@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
+
+"""Different utilities for the numpy brains."""
+
+from __future__ import annotations
+
+from astroid.builder import extract_node
+from astroid.context import InferenceContext
+from astroid.nodes.node_classes import Attribute, Import, Name
+
+# Class subscript is available in numpy starting with version 1.20.0
+NUMPY_VERSION_TYPE_HINTS_SUPPORT = ("1", "20", "0")
 
 
-"""Different utilities for the numpy brains"""
+def numpy_supports_type_hints() -> bool:
+    """Returns True if numpy supports type hints."""
+    np_ver = _get_numpy_version()
+    return np_ver and np_ver > NUMPY_VERSION_TYPE_HINTS_SUPPORT
 
 
-import astroid
+def _get_numpy_version() -> tuple[str, str, str]:
+    """
+    Return the numpy version number if numpy can be imported.
+
+    Otherwise returns ('0', '0', '0')
+    """
+    try:
+        import numpy  # pylint: disable=import-outside-toplevel
+
+        return tuple(numpy.version.version.split("."))
+    except (ImportError, AttributeError):
+        return ("0", "0", "0")
 
 
-def infer_numpy_member(src, node, context=None):
-    node = astroid.extract_node(src)
+def infer_numpy_member(src, node, context: InferenceContext | None = None):
+    node = extract_node(src)
     return node.infer(context=context)
 
 
-def _is_a_numpy_module(node: astroid.node_classes.Name) -> bool:
+def _is_a_numpy_module(node: Name) -> bool:
     """
     Returns True if the node is a representation of a numpy module.
 
@@ -30,36 +53,29 @@ def _is_a_numpy_module(node: astroid.node_classes.Name) -> bool:
     """
     module_nickname = node.name
     potential_import_target = [
-        x for x in node.lookup(module_nickname)[1] if isinstance(x, astroid.Import)
+        x for x in node.lookup(module_nickname)[1] if isinstance(x, Import)
     ]
-    for target in potential_import_target:
-        if ("numpy", module_nickname) in target.names:
-            return True
-    return False
+    return any(
+        ("numpy", module_nickname) in target.names or ("numpy", None) in target.names
+        for target in potential_import_target
+    )
 
 
-def looks_like_numpy_member(
-    member_name: str, node: astroid.node_classes.NodeNG
-) -> bool:
+def name_looks_like_numpy_member(member_name: str, node: Name) -> bool:
     """
-    Returns True if the node is a member of numpy whose
+    Returns True if the Name is a member of numpy whose
     name is member_name.
-
-    :param member_name: name of the member
-    :param node: node to test
-    :return: True if the node is a member of numpy
     """
-    if (
-        isinstance(node, astroid.Attribute)
-        and node.attrname == member_name
-        and isinstance(node.expr, astroid.Name)
+    return node.name == member_name and node.root().name.startswith("numpy")
+
+
+def attribute_looks_like_numpy_member(member_name: str, node: Attribute) -> bool:
+    """
+    Returns True if the Attribute is a member of numpy whose
+    name is member_name.
+    """
+    return (
+        node.attrname == member_name
+        and isinstance(node.expr, Name)
         and _is_a_numpy_module(node.expr)
-    ):
-        return True
-    if (
-        isinstance(node, astroid.Name)
-        and node.name == member_name
-        and node.root().name.startswith("numpy")
-    ):
-        return True
-    return False
+    )

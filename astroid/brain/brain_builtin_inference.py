@@ -1,93 +1,150 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) 2014-2020 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2014-2015 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
-# Copyright (c) 2015-2016 Ceridwen <ceridwenv@gmail.com>
-# Copyright (c) 2015 Rene Zhang <rz99@cornell.edu>
-# Copyright (c) 2018 Bryce Guinta <bryce.paul.guinta@gmail.com>
-# Copyright (c) 2018 Ville Skyttä <ville.skytta@iki.fi>
-# Copyright (c) 2019 Stanislav Levin <slev@altlinux.org>
-# Copyright (c) 2019 David Liu <david@cs.toronto.edu>
-# Copyright (c) 2019 Bryce Guinta <bryce.guinta@protonmail.com>
-# Copyright (c) 2019 Frédéric Chapoton <fchapoton2@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
 
 """Astroid hooks for various builtins."""
 
+from __future__ import annotations
+
+import itertools
+from collections.abc import Callable, Iterable, Iterator
 from functools import partial
-from textwrap import dedent
+from typing import TYPE_CHECKING, Any, NoReturn, Union, cast
 
-import six
-from astroid import (
-    MANAGER,
-    UseInferenceDefault,
-    AttributeInferenceError,
-    inference_tip,
-    InferenceError,
-    NameInferenceError,
-    AstroidTypeError,
-    MroError,
-)
-from astroid import arguments
+from astroid import arguments, helpers, inference_tip, nodes, objects, util
 from astroid.builder import AstroidBuilder
-from astroid import helpers
-from astroid import nodes
-from astroid import objects
-from astroid import scoped_nodes
-from astroid import util
+from astroid.context import InferenceContext
+from astroid.exceptions import (
+    AstroidTypeError,
+    AttributeInferenceError,
+    InferenceError,
+    MroError,
+    UseInferenceDefault,
+)
+from astroid.manager import AstroidManager
+from astroid.nodes import scoped_nodes
+from astroid.typing import (
+    ConstFactoryResult,
+    InferenceResult,
+    SuccessfulInferenceResult,
+)
 
+if TYPE_CHECKING:
+    from astroid.bases import Instance
+
+ContainerObjects = Union[
+    objects.FrozenSet,
+    objects.DictItems,
+    objects.DictKeys,
+    objects.DictValues,
+]
+
+BuiltContainers = Union[
+    type[tuple],
+    type[list],
+    type[set],
+    type[frozenset],
+]
+
+CopyResult = Union[
+    nodes.Dict,
+    nodes.List,
+    nodes.Set,
+    objects.FrozenSet,
+]
 
 OBJECT_DUNDER_NEW = "object.__new__"
 
+STR_CLASS = """
+class whatever(object):
+    def join(self, iterable):
+        return {rvalue}
+    def replace(self, old, new, count=None):
+        return {rvalue}
+    def format(self, *args, **kwargs):
+        return {rvalue}
+    def encode(self, encoding='ascii', errors=None):
+        return b''
+    def decode(self, encoding='ascii', errors=None):
+        return u''
+    def capitalize(self):
+        return {rvalue}
+    def title(self):
+        return {rvalue}
+    def lower(self):
+        return {rvalue}
+    def upper(self):
+        return {rvalue}
+    def swapcase(self):
+        return {rvalue}
+    def index(self, sub, start=None, end=None):
+        return 0
+    def find(self, sub, start=None, end=None):
+        return 0
+    def count(self, sub, start=None, end=None):
+        return 0
+    def strip(self, chars=None):
+        return {rvalue}
+    def lstrip(self, chars=None):
+        return {rvalue}
+    def rstrip(self, chars=None):
+        return {rvalue}
+    def rjust(self, width, fillchar=None):
+        return {rvalue}
+    def center(self, width, fillchar=None):
+        return {rvalue}
+    def ljust(self, width, fillchar=None):
+        return {rvalue}
+"""
 
-def _extend_str(class_node, rvalue):
-    """function to extend builtin str/unicode class"""
-    code = dedent(
-        """
-    class whatever(object):
-        def join(self, iterable):
-            return {rvalue}
-        def replace(self, old, new, count=None):
-            return {rvalue}
-        def format(self, *args, **kwargs):
-            return {rvalue}
-        def encode(self, encoding='ascii', errors=None):
-            return ''
-        def decode(self, encoding='ascii', errors=None):
-            return u''
-        def capitalize(self):
-            return {rvalue}
-        def title(self):
-            return {rvalue}
-        def lower(self):
-            return {rvalue}
-        def upper(self):
-            return {rvalue}
-        def swapcase(self):
-            return {rvalue}
-        def index(self, sub, start=None, end=None):
-            return 0
-        def find(self, sub, start=None, end=None):
-            return 0
-        def count(self, sub, start=None, end=None):
-            return 0
-        def strip(self, chars=None):
-            return {rvalue}
-        def lstrip(self, chars=None):
-            return {rvalue}
-        def rstrip(self, chars=None):
-            return {rvalue}
-        def rjust(self, width, fillchar=None):
-            return {rvalue}
-        def center(self, width, fillchar=None):
-            return {rvalue}
-        def ljust(self, width, fillchar=None):
-            return {rvalue}
-    """
-    )
+
+BYTES_CLASS = """
+class whatever(object):
+    def join(self, iterable):
+        return {rvalue}
+    def replace(self, old, new, count=None):
+        return {rvalue}
+    def decode(self, encoding='ascii', errors=None):
+        return u''
+    def capitalize(self):
+        return {rvalue}
+    def title(self):
+        return {rvalue}
+    def lower(self):
+        return {rvalue}
+    def upper(self):
+        return {rvalue}
+    def swapcase(self):
+        return {rvalue}
+    def index(self, sub, start=None, end=None):
+        return 0
+    def find(self, sub, start=None, end=None):
+        return 0
+    def count(self, sub, start=None, end=None):
+        return 0
+    def strip(self, chars=None):
+        return {rvalue}
+    def lstrip(self, chars=None):
+        return {rvalue}
+    def rstrip(self, chars=None):
+        return {rvalue}
+    def rjust(self, width, fillchar=None):
+        return {rvalue}
+    def center(self, width, fillchar=None):
+        return {rvalue}
+    def ljust(self, width, fillchar=None):
+        return {rvalue}
+"""
+
+
+def _use_default() -> NoReturn:  # pragma: no cover
+    raise UseInferenceDefault()
+
+
+def _extend_string_class(class_node, code, rvalue):
+    """Function to extend builtin str/unicode class."""
     code = code.format(rvalue=rvalue)
-    fake = AstroidBuilder(MANAGER).string_build(code)["whatever"]
+    fake = AstroidBuilder(AstroidManager()).string_build(code)["whatever"]
     for method in fake.mymethods():
         method.parent = class_node
         method.lineno = None
@@ -99,20 +156,39 @@ def _extend_str(class_node, rvalue):
 
 
 def _extend_builtins(class_transforms):
-    builtin_ast = MANAGER.builtins_module
+    builtin_ast = AstroidManager().builtins_module
     for class_name, transform in class_transforms.items():
         transform(builtin_ast[class_name])
 
 
-_extend_builtins(
-    {
-        "bytes": partial(_extend_str, rvalue="b''"),
-        "str": partial(_extend_str, rvalue="''"),
-    }
-)
+def on_bootstrap():
+    """Called by astroid_bootstrapping()."""
+    _extend_builtins(
+        {
+            "bytes": partial(_extend_string_class, code=BYTES_CLASS, rvalue="b''"),
+            "str": partial(_extend_string_class, code=STR_CLASS, rvalue="''"),
+        }
+    )
 
 
-def _builtin_filter_predicate(node, builtin_name):
+def _builtin_filter_predicate(node, builtin_name) -> bool:
+    if (
+        builtin_name == "type"
+        and node.root().name == "re"
+        and isinstance(node.func, nodes.Name)
+        and node.func.name == "type"
+        and isinstance(node.parent, nodes.Assign)
+        and len(node.parent.targets) == 1
+        and isinstance(node.parent.targets[0], nodes.AssignName)
+        and node.parent.targets[0].name in {"Pattern", "Match"}
+    ):
+        # Handle re.Pattern and re.Match in brain_re
+        # Match these patterns from stdlib/re.py
+        # ```py
+        # Pattern = type(...)
+        # Match = type(...)
+        # ```
+        return False
     if isinstance(node.func, nodes.Name) and node.func.name == builtin_name:
         return True
     if isinstance(node.func, nodes.Attribute):
@@ -124,14 +200,18 @@ def _builtin_filter_predicate(node, builtin_name):
     return False
 
 
-def register_builtin_transform(transform, builtin_name):
+def register_builtin_transform(
+    manager: AstroidManager, transform, builtin_name
+) -> None:
     """Register a new transform function for the given *builtin_name*.
 
     The transform function must accept two parameters, a node and
     an optional context.
     """
 
-    def _transform_wrapper(node, context=None):
+    def _transform_wrapper(
+        node: nodes.Call, context: InferenceContext | None = None, **kwargs: Any
+    ) -> Iterator:
         result = transform(node, context=context)
         if result:
             if not result.parent:
@@ -142,21 +222,34 @@ def register_builtin_transform(transform, builtin_name):
 
             if result.lineno is None:
                 result.lineno = node.lineno
-            if result.col_offset is None:
+            # Can be a 'Module' see https://github.com/pylint-dev/pylint/issues/4671
+            # We don't have a regression test on this one: tread carefully
+            if hasattr(result, "col_offset") and result.col_offset is None:
                 result.col_offset = node.col_offset
         return iter([result])
 
-    MANAGER.register_transform(
+    manager.register_transform(
         nodes.Call,
         inference_tip(_transform_wrapper),
         partial(_builtin_filter_predicate, builtin_name=builtin_name),
     )
 
 
-def _container_generic_inference(node, context, node_type, transform):
+def _container_generic_inference(
+    node: nodes.Call,
+    context: InferenceContext | None,
+    node_type: type[nodes.BaseContainer],
+    transform: Callable[[SuccessfulInferenceResult], nodes.BaseContainer | None],
+) -> nodes.BaseContainer:
     args = node.args
     if not args:
-        return node_type()
+        return node_type(
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+            parent=node.parent,
+            end_lineno=node.end_lineno,
+            end_col_offset=node.end_col_offset,
+        )
     if len(node.args) > 1:
         raise UseInferenceDefault()
 
@@ -165,27 +258,38 @@ def _container_generic_inference(node, context, node_type, transform):
     if not transformed:
         try:
             inferred = next(arg.infer(context=context))
-        except (InferenceError, StopIteration):
-            raise UseInferenceDefault()
-        if inferred is util.Uninferable:
-            raise UseInferenceDefault()
+        except (InferenceError, StopIteration) as exc:
+            raise UseInferenceDefault from exc
+        if isinstance(inferred, util.UninferableBase):
+            raise UseInferenceDefault
         transformed = transform(inferred)
-    if not transformed or transformed is util.Uninferable:
-        raise UseInferenceDefault()
+    if not transformed or isinstance(transformed, util.UninferableBase):
+        raise UseInferenceDefault
     return transformed
 
 
-def _container_generic_transform(arg, context, klass, iterables, build_elts):
+def _container_generic_transform(
+    arg: SuccessfulInferenceResult,
+    context: InferenceContext | None,
+    klass: type[nodes.BaseContainer],
+    iterables: tuple[type[nodes.BaseContainer] | type[ContainerObjects], ...],
+    build_elts: BuiltContainers,
+) -> nodes.BaseContainer | None:
+    elts: Iterable | str | bytes
+
     if isinstance(arg, klass):
         return arg
-    elif isinstance(arg, iterables):
+    if isinstance(arg, iterables):
+        arg = cast(Union[nodes.BaseContainer, ContainerObjects], arg)
         if all(isinstance(elt, nodes.Const) for elt in arg.elts):
-            elts = [elt.value for elt in arg.elts]
+            elts = [cast(nodes.Const, elt).value for elt in arg.elts]
         else:
             # TODO: Does not handle deduplication for sets.
             elts = []
             for element in arg.elts:
-                inferred = helpers.safe_infer(element, context=context)
+                if not element:
+                    continue
+                inferred = util.safe_infer(element, context=context)
                 if inferred:
                     evaluated_object = nodes.EvaluatedObject(
                         original=element, value=inferred
@@ -193,21 +297,24 @@ def _container_generic_transform(arg, context, klass, iterables, build_elts):
                     elts.append(evaluated_object)
     elif isinstance(arg, nodes.Dict):
         # Dicts need to have consts as strings already.
-        if not all(isinstance(elt[0], nodes.Const) for elt in arg.items):
-            raise UseInferenceDefault()
-        elts = [item[0].value for item in arg.items]
-    elif isinstance(arg, nodes.Const) and isinstance(
-        arg.value, (six.string_types, six.binary_type)
-    ):
+        elts = [
+            item[0].value if isinstance(item[0], nodes.Const) else _use_default()
+            for item in arg.items
+        ]
+    elif isinstance(arg, nodes.Const) and isinstance(arg.value, (str, bytes)):
         elts = arg.value
     else:
-        return
+        return None
     return klass.from_elements(elts=build_elts(elts))
 
 
 def _infer_builtin_container(
-    node, context, klass=None, iterables=None, build_elts=None
-):
+    node: nodes.Call,
+    context: InferenceContext | None,
+    klass: type[nodes.BaseContainer],
+    iterables: tuple[type[nodes.NodeNG] | type[ContainerObjects], ...],
+    build_elts: BuiltContainers,
+) -> nodes.BaseContainer:
     transform_func = partial(
         _container_generic_transform,
         context=context,
@@ -264,11 +371,13 @@ infer_frozenset = partial(
 
 
 def _get_elts(arg, context):
-    is_iterable = lambda n: isinstance(n, (nodes.List, nodes.Tuple, nodes.Set))
+    def is_iterable(n):
+        return isinstance(n, (nodes.List, nodes.Tuple, nodes.Set))
+
     try:
         inferred = next(arg.infer(context))
-    except (InferenceError, NameInferenceError):
-        raise UseInferenceDefault()
+    except (InferenceError, StopIteration) as exc:
+        raise UseInferenceDefault from exc
     if isinstance(inferred, nodes.Dict):
         items = inferred.items
     elif is_iterable(inferred):
@@ -290,7 +399,7 @@ def _get_elts(arg, context):
     return items
 
 
-def infer_dict(node, context=None):
+def infer_dict(node: nodes.Call, context: InferenceContext | None = None) -> nodes.Dict:
     """Try to infer a dict call to a Dict node.
 
     The function treats the following cases:
@@ -311,10 +420,17 @@ def infer_dict(node, context=None):
     args = call.positional_arguments
     kwargs = list(call.keyword_arguments.items())
 
+    items: list[tuple[InferenceResult, InferenceResult]]
     if not args and not kwargs:
         # dict()
-        return nodes.Dict()
-    elif kwargs and not args:
+        return nodes.Dict(
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+            parent=node.parent,
+            end_lineno=node.end_lineno,
+            end_col_offset=node.end_col_offset,
+        )
+    if kwargs and not args:
         # dict(a=1, b=2, c=4)
         items = [(nodes.Const(key), value) for key, value in kwargs]
     elif len(args) == 1 and kwargs:
@@ -326,15 +442,20 @@ def infer_dict(node, context=None):
         items = _get_elts(args[0], context)
     else:
         raise UseInferenceDefault()
-
     value = nodes.Dict(
-        col_offset=node.col_offset, lineno=node.lineno, parent=node.parent
+        col_offset=node.col_offset,
+        lineno=node.lineno,
+        parent=node.parent,
+        end_lineno=node.end_lineno,
+        end_col_offset=node.end_col_offset,
     )
     value.postinit(items)
     return value
 
 
-def infer_super(node, context=None):
+def infer_super(
+    node: nodes.Call, context: InferenceContext | None = None
+) -> objects.Super:
     """Understand super calls.
 
     There are some restrictions for what can be understood:
@@ -360,7 +481,8 @@ def infer_super(node, context=None):
         raise UseInferenceDefault
 
     cls = scoped_nodes.get_wrapping_class(scope)
-    if not len(node.args):
+    assert cls is not None
+    if not node.args:
         mro_pointer = cls
         # In we are in a classmethod, the interpreter will fill
         # automatically the class as the second argument, not an instance.
@@ -371,19 +493,25 @@ def infer_super(node, context=None):
     else:
         try:
             mro_pointer = next(node.args[0].infer(context=context))
-        except InferenceError:
-            raise UseInferenceDefault
+        except (InferenceError, StopIteration) as exc:
+            raise UseInferenceDefault from exc
         try:
             mro_type = next(node.args[1].infer(context=context))
-        except InferenceError:
-            raise UseInferenceDefault
+        except (InferenceError, StopIteration) as exc:
+            raise UseInferenceDefault from exc
 
-    if mro_pointer is util.Uninferable or mro_type is util.Uninferable:
+    if isinstance(mro_pointer, util.UninferableBase) or isinstance(
+        mro_type, util.UninferableBase
+    ):
         # No way we could understand this.
         raise UseInferenceDefault
 
     super_obj = objects.Super(
-        mro_pointer=mro_pointer, mro_type=mro_type, self_class=cls, scope=scope
+        mro_pointer=mro_pointer,
+        mro_type=mro_type,
+        self_class=cls,
+        scope=scope,
+        call=node,
     )
     super_obj.parent = node
     return super_obj
@@ -397,26 +525,24 @@ def _infer_getattr_args(node, context):
     try:
         obj = next(node.args[0].infer(context=context))
         attr = next(node.args[1].infer(context=context))
-    except InferenceError:
-        raise UseInferenceDefault
+    except (InferenceError, StopIteration) as exc:
+        raise UseInferenceDefault from exc
 
-    if obj is util.Uninferable or attr is util.Uninferable:
+    if isinstance(obj, util.UninferableBase) or isinstance(attr, util.UninferableBase):
         # If one of the arguments is something we can't infer,
         # then also make the result of the getattr call something
         # which is unknown.
         return util.Uninferable, util.Uninferable
 
-    is_string = isinstance(attr, nodes.Const) and isinstance(
-        attr.value, six.string_types
-    )
+    is_string = isinstance(attr, nodes.Const) and isinstance(attr.value, str)
     if not is_string:
         raise UseInferenceDefault
 
     return obj, attr.value
 
 
-def infer_getattr(node, context=None):
-    """Understand getattr calls
+def infer_getattr(node, context: InferenceContext | None = None):
+    """Understand getattr calls.
 
     If one of the arguments is an Uninferable object, then the
     result will be an Uninferable object. Otherwise, the normal attribute
@@ -424,8 +550,8 @@ def infer_getattr(node, context=None):
     """
     obj, attr = _infer_getattr_args(node, context)
     if (
-        obj is util.Uninferable
-        or attr is util.Uninferable
+        isinstance(obj, util.UninferableBase)
+        or isinstance(attr, util.UninferableBase)
         or not hasattr(obj, "igetattr")
     ):
         return util.Uninferable
@@ -437,14 +563,14 @@ def infer_getattr(node, context=None):
             # Try to infer the default and return it instead.
             try:
                 return next(node.args[2].infer(context=context))
-            except InferenceError:
-                raise UseInferenceDefault
+            except (StopIteration, InferenceError) as exc:
+                raise UseInferenceDefault from exc
 
     raise UseInferenceDefault
 
 
-def infer_hasattr(node, context=None):
-    """Understand hasattr calls
+def infer_hasattr(node, context: InferenceContext | None = None):
+    """Understand hasattr calls.
 
     This always guarantees three possible outcomes for calling
     hasattr: Const(False) when we are sure that the object
@@ -455,8 +581,8 @@ def infer_hasattr(node, context=None):
     try:
         obj, attr = _infer_getattr_args(node, context)
         if (
-            obj is util.Uninferable
-            or attr is util.Uninferable
+            isinstance(obj, util.UninferableBase)
+            or isinstance(attr, util.UninferableBase)
             or not hasattr(obj, "getattr")
         ):
             return util.Uninferable
@@ -470,8 +596,8 @@ def infer_hasattr(node, context=None):
     return nodes.Const(True)
 
 
-def infer_callable(node, context=None):
-    """Understand callable calls
+def infer_callable(node, context: InferenceContext | None = None):
+    """Understand callable calls.
 
     This follows Python's semantics, where an object
     is callable if it provides an attribute __call__,
@@ -485,15 +611,17 @@ def infer_callable(node, context=None):
     argument = node.args[0]
     try:
         inferred = next(argument.infer(context=context))
-    except InferenceError:
+    except (InferenceError, StopIteration):
         return util.Uninferable
-    if inferred is util.Uninferable:
+    if isinstance(inferred, util.UninferableBase):
         return util.Uninferable
     return nodes.Const(inferred.callable())
 
 
-def infer_property(node, context=None):
-    """Understand `property` class
+def infer_property(
+    node: nodes.Call, context: InferenceContext | None = None
+) -> objects.Property:
+    """Understand `property` class.
 
     This only infers the output of `property`
     call, not the arguments themselves.
@@ -505,23 +633,29 @@ def infer_property(node, context=None):
     getter = node.args[0]
     try:
         inferred = next(getter.infer(context=context))
-    except InferenceError:
-        raise UseInferenceDefault
+    except (InferenceError, StopIteration) as exc:
+        raise UseInferenceDefault from exc
 
     if not isinstance(inferred, (nodes.FunctionDef, nodes.Lambda)):
         raise UseInferenceDefault
 
-    return objects.Property(
+    prop_func = objects.Property(
         function=inferred,
         name=inferred.name,
-        doc=getattr(inferred, "doc", None),
         lineno=node.lineno,
-        parent=node,
         col_offset=node.col_offset,
     )
+    # Set parent outside __init__: https://github.com/pylint-dev/astroid/issues/1490
+    prop_func.parent = node
+    prop_func.postinit(
+        body=[],
+        args=inferred.args,
+        doc_node=getattr(inferred, "doc_node", None),
+    )
+    return prop_func
 
 
-def infer_bool(node, context=None):
+def infer_bool(node, context: InferenceContext | None = None):
     """Understand bool calls."""
     if len(node.args) > 1:
         # Invalid bool call.
@@ -533,18 +667,18 @@ def infer_bool(node, context=None):
     argument = node.args[0]
     try:
         inferred = next(argument.infer(context=context))
-    except InferenceError:
+    except (InferenceError, StopIteration):
         return util.Uninferable
-    if inferred is util.Uninferable:
+    if isinstance(inferred, util.UninferableBase):
         return util.Uninferable
 
     bool_value = inferred.bool_value(context=context)
-    if bool_value is util.Uninferable:
+    if isinstance(bool_value, util.UninferableBase):
         return util.Uninferable
     return nodes.Const(bool_value)
 
 
-def infer_type(node, context=None):
+def infer_type(node, context: InferenceContext | None = None):
     """Understand the one-argument form of *type*."""
     if len(node.args) != 1:
         raise UseInferenceDefault
@@ -552,16 +686,16 @@ def infer_type(node, context=None):
     return helpers.object_type(node.args[0], context)
 
 
-def infer_slice(node, context=None):
+def infer_slice(node, context: InferenceContext | None = None):
     """Understand `slice` calls."""
     args = node.args
     if not 0 < len(args) <= 3:
         raise UseInferenceDefault
 
-    infer_func = partial(helpers.safe_infer, context=context)
+    infer_func = partial(util.safe_infer, context=context)
     args = [infer_func(arg) for arg in args]
     for arg in args:
-        if not arg or arg is util.Uninferable:
+        if not arg or isinstance(arg, util.UninferableBase):
             raise UseInferenceDefault
         if not isinstance(arg, nodes.Const):
             raise UseInferenceDefault
@@ -573,20 +707,26 @@ def infer_slice(node, context=None):
         args.extend([None] * (3 - len(args)))
 
     slice_node = nodes.Slice(
-        lineno=node.lineno, col_offset=node.col_offset, parent=node.parent
+        lineno=node.lineno,
+        col_offset=node.col_offset,
+        parent=node.parent,
+        end_lineno=node.end_lineno,
+        end_col_offset=node.end_col_offset,
     )
     slice_node.postinit(*args)
     return slice_node
 
 
-def _infer_object__new__decorator(node, context=None):
+def _infer_object__new__decorator(
+    node: nodes.ClassDef, context: InferenceContext | None = None, **kwargs: Any
+) -> Iterator[Instance]:
     # Instantiate class immediately
     # since that's what @object.__new__ does
     return iter((node.instantiate_class(),))
 
 
-def _infer_object__new__decorator_check(node):
-    """Predicate before inference_tip
+def _infer_object__new__decorator_check(node) -> bool:
+    """Predicate before inference_tip.
 
     Check if the given ClassDef has an @object.__new__ decorator
     """
@@ -600,11 +740,11 @@ def _infer_object__new__decorator_check(node):
     return False
 
 
-def infer_issubclass(callnode, context=None):
-    """Infer issubclass() calls
+def infer_issubclass(callnode, context: InferenceContext | None = None):
+    """Infer issubclass() calls.
 
     :param nodes.Call callnode: an `issubclass` call
-    :param InferenceContext: the context for the inference
+    :param InferenceContext context: the context for the inference
     :rtype nodes.Const: Boolean Const value of the `issubclass` call
     :raises UseInferenceDefault: If the node cannot be inferred
     """
@@ -614,16 +754,14 @@ def infer_issubclass(callnode, context=None):
         raise UseInferenceDefault("TypeError: issubclass() takes no keyword arguments")
     if len(call.positional_arguments) != 2:
         raise UseInferenceDefault(
-            "Expected two arguments, got {count}".format(
-                count=len(call.positional_arguments)
-            )
+            f"Expected two arguments, got {len(call.positional_arguments)}"
         )
     # The left hand argument is the obj to be checked
     obj_node, class_or_tuple_node = call.positional_arguments
 
     try:
         obj_type = next(obj_node.infer(context=context))
-    except InferenceError as exc:
+    except (InferenceError, StopIteration) as exc:
         raise UseInferenceDefault from exc
     if not isinstance(obj_type, nodes.ClassDef):
         raise UseInferenceDefault("TypeError: arg 1 must be class")
@@ -645,14 +783,12 @@ def infer_issubclass(callnode, context=None):
     return nodes.Const(issubclass_bool)
 
 
-def infer_isinstance(callnode, context=None):
-    """Infer isinstance calls
+def infer_isinstance(
+    callnode: nodes.Call, context: InferenceContext | None = None
+) -> nodes.Const:
+    """Infer isinstance calls.
 
     :param nodes.Call callnode: an isinstance call
-    :param InferenceContext: context for call
-        (currently unused but is a common interface for inference)
-    :rtype nodes.Const: Boolean Const value of isinstance call
-
     :raises UseInferenceDefault: If the node cannot be inferred
     """
     call = arguments.CallSite.from_call(callnode, context=context)
@@ -661,9 +797,7 @@ def infer_isinstance(callnode, context=None):
         raise UseInferenceDefault("TypeError: isinstance() takes no keyword arguments")
     if len(call.positional_arguments) != 2:
         raise UseInferenceDefault(
-            "Expected two arguments, got {count}".format(
-                count=len(call.positional_arguments)
-            )
+            f"Expected two arguments, got {len(call.positional_arguments)}"
         )
     # The left hand argument is the obj to be checked
     obj_node, class_or_tuple_node = call.positional_arguments
@@ -673,40 +807,45 @@ def infer_isinstance(callnode, context=None):
         class_container = _class_or_tuple_to_container(
             class_or_tuple_node, context=context
         )
-    except InferenceError:
-        raise UseInferenceDefault
+    except InferenceError as exc:
+        raise UseInferenceDefault from exc
     try:
         isinstance_bool = helpers.object_isinstance(obj_node, class_container, context)
     except AstroidTypeError as exc:
-        raise UseInferenceDefault("TypeError: " + str(exc))
+        raise UseInferenceDefault("TypeError: " + str(exc)) from exc
     except MroError as exc:
         raise UseInferenceDefault from exc
-    if isinstance_bool is util.Uninferable:
+    if isinstance(isinstance_bool, util.UninferableBase):
         raise UseInferenceDefault
     return nodes.Const(isinstance_bool)
 
 
-def _class_or_tuple_to_container(node, context=None):
+def _class_or_tuple_to_container(
+    node: InferenceResult, context: InferenceContext | None = None
+) -> list[InferenceResult]:
     # Move inferences results into container
     # to simplify later logic
     # raises InferenceError if any of the inferences fall through
-    node_infer = next(node.infer(context=context))
+    try:
+        node_infer = next(node.infer(context=context))
+    except StopIteration as e:
+        raise InferenceError(node=node, context=context) from e
     # arg2 MUST be a type or a TUPLE of types
     # for isinstance
     if isinstance(node_infer, nodes.Tuple):
-        class_container = [
-            next(node.infer(context=context)) for node in node_infer.elts
-        ]
-        class_container = [
-            klass_node for klass_node in class_container if klass_node is not None
-        ]
+        try:
+            class_container = [
+                next(node.infer(context=context)) for node in node_infer.elts
+            ]
+        except StopIteration as e:
+            raise InferenceError(node=node, context=context) from e
     else:
         class_container = [node_infer]
     return class_container
 
 
-def infer_len(node, context=None):
-    """Infer length calls
+def infer_len(node, context: InferenceContext | None = None):
+    """Infer length calls.
 
     :param nodes.Call node: len call to infer
     :param context.InferenceContext: node context
@@ -721,14 +860,15 @@ def infer_len(node, context=None):
             "({len}) given".format(len=len(call.positional_arguments))
         )
     [argument_node] = call.positional_arguments
+
     try:
         return nodes.Const(helpers.object_len(argument_node, context=context))
     except (AstroidTypeError, InferenceError) as exc:
         raise UseInferenceDefault(str(exc)) from exc
 
 
-def infer_str(node, context=None):
-    """Infer str() calls
+def infer_str(node, context: InferenceContext | None = None):
+    """Infer str() calls.
 
     :param nodes.Call node: str() call to infer
     :param context.InferenceContext: node context
@@ -743,8 +883,8 @@ def infer_str(node, context=None):
         raise UseInferenceDefault(str(exc)) from exc
 
 
-def infer_int(node, context=None):
-    """Infer int() calls
+def infer_int(node, context: InferenceContext | None = None):
+    """Infer int() calls.
 
     :param nodes.Call node: int() call to infer
     :param context.InferenceContext: node context
@@ -760,7 +900,7 @@ def infer_int(node, context=None):
         except (InferenceError, StopIteration) as exc:
             raise UseInferenceDefault(str(exc)) from exc
 
-        if first_value is util.Uninferable:
+        if isinstance(first_value, util.UninferableBase):
             raise UseInferenceDefault
 
         if isinstance(first_value, nodes.Const) and isinstance(
@@ -775,11 +915,11 @@ def infer_int(node, context=None):
     return nodes.Const(0)
 
 
-def infer_dict_fromkeys(node, context=None):
-    """Infer dict.fromkeys
+def infer_dict_fromkeys(node, context: InferenceContext | None = None):
+    """Infer dict.fromkeys.
 
     :param nodes.Call node: dict.fromkeys() call to infer
-    :param context.InferenceContext: node context
+    :param context.InferenceContext context: node context
     :rtype nodes.Dict:
         a Dictionary containing the values that astroid was able to infer.
         In case the inference failed for any reason, an empty dictionary
@@ -788,7 +928,11 @@ def infer_dict_fromkeys(node, context=None):
 
     def _build_dict_with_elements(elements):
         new_node = nodes.Dict(
-            col_offset=node.col_offset, lineno=node.lineno, parent=node.parent
+            col_offset=node.col_offset,
+            lineno=node.lineno,
+            parent=node.parent,
+            end_lineno=node.end_lineno,
+            end_col_offset=node.end_col_offset,
         )
         new_node.postinit(elements)
         return new_node
@@ -805,7 +949,7 @@ def infer_dict_fromkeys(node, context=None):
     values = call.positional_arguments[0]
     try:
         inferred_values = next(values.infer(context=context))
-    except InferenceError:
+    except (InferenceError, StopIteration):
         return _build_dict_with_elements([])
     if inferred_values is util.Uninferable:
         return _build_dict_with_elements([])
@@ -821,15 +965,14 @@ def infer_dict_fromkeys(node, context=None):
 
         elements_with_value = [(element, default) for element in elements]
         return _build_dict_with_elements(elements_with_value)
-
-    elif isinstance(inferred_values, nodes.Const) and isinstance(
+    if isinstance(inferred_values, nodes.Const) and isinstance(
         inferred_values.value, (str, bytes)
     ):
-        elements = [
+        elements_with_value = [
             (nodes.Const(element), default) for element in inferred_values.value
         ]
-        return _build_dict_with_elements(elements)
-    elif isinstance(inferred_values, nodes.Dict):
+        return _build_dict_with_elements(elements_with_value)
+    if isinstance(inferred_values, nodes.Dict):
         keys = inferred_values.itered()
         for key in keys:
             if not isinstance(key, accepted_iterable_elements):
@@ -843,31 +986,126 @@ def infer_dict_fromkeys(node, context=None):
     return _build_dict_with_elements([])
 
 
-# Builtins inference
-register_builtin_transform(infer_bool, "bool")
-register_builtin_transform(infer_super, "super")
-register_builtin_transform(infer_callable, "callable")
-register_builtin_transform(infer_property, "property")
-register_builtin_transform(infer_getattr, "getattr")
-register_builtin_transform(infer_hasattr, "hasattr")
-register_builtin_transform(infer_tuple, "tuple")
-register_builtin_transform(infer_set, "set")
-register_builtin_transform(infer_list, "list")
-register_builtin_transform(infer_dict, "dict")
-register_builtin_transform(infer_frozenset, "frozenset")
-register_builtin_transform(infer_type, "type")
-register_builtin_transform(infer_slice, "slice")
-register_builtin_transform(infer_isinstance, "isinstance")
-register_builtin_transform(infer_issubclass, "issubclass")
-register_builtin_transform(infer_len, "len")
-register_builtin_transform(infer_str, "str")
-register_builtin_transform(infer_int, "int")
-register_builtin_transform(infer_dict_fromkeys, "dict.fromkeys")
+def _infer_copy_method(
+    node: nodes.Call, context: InferenceContext | None = None, **kwargs: Any
+) -> Iterator[CopyResult]:
+    assert isinstance(node.func, nodes.Attribute)
+    inferred_orig, inferred_copy = itertools.tee(node.func.expr.infer(context=context))
+    if all(
+        isinstance(
+            inferred_node, (nodes.Dict, nodes.List, nodes.Set, objects.FrozenSet)
+        )
+        for inferred_node in inferred_orig
+    ):
+        return cast(Iterator[CopyResult], inferred_copy)
+
+    raise UseInferenceDefault
 
 
-# Infer object.__new__ calls
-MANAGER.register_transform(
-    nodes.ClassDef,
-    inference_tip(_infer_object__new__decorator),
-    _infer_object__new__decorator_check,
-)
+def _is_str_format_call(node: nodes.Call) -> bool:
+    """Catch calls to str.format()."""
+    if not isinstance(node.func, nodes.Attribute) or not node.func.attrname == "format":
+        return False
+
+    if isinstance(node.func.expr, nodes.Name):
+        value = util.safe_infer(node.func.expr)
+    else:
+        value = node.func.expr
+
+    return isinstance(value, nodes.Const) and isinstance(value.value, str)
+
+
+def _infer_str_format_call(
+    node: nodes.Call, context: InferenceContext | None = None, **kwargs: Any
+) -> Iterator[ConstFactoryResult | util.UninferableBase]:
+    """Return a Const node based on the template and passed arguments."""
+    call = arguments.CallSite.from_call(node, context=context)
+    assert isinstance(node.func, (nodes.Attribute, nodes.AssignAttr, nodes.DelAttr))
+
+    value: nodes.Const
+    if isinstance(node.func.expr, nodes.Name):
+        if not (inferred := util.safe_infer(node.func.expr)) or not isinstance(
+            inferred, nodes.Const
+        ):
+            return iter([util.Uninferable])
+        value = inferred
+    elif isinstance(node.func.expr, nodes.Const):
+        value = node.func.expr
+    else:  # pragma: no cover
+        return iter([util.Uninferable])
+
+    format_template = value.value
+
+    # Get the positional arguments passed
+    inferred_positional: list[nodes.Const] = []
+    for i in call.positional_arguments:
+        one_inferred = util.safe_infer(i, context)
+        if not isinstance(one_inferred, nodes.Const):
+            return iter([util.Uninferable])
+        inferred_positional.append(one_inferred)
+
+    pos_values: list[str] = [i.value for i in inferred_positional]
+
+    # Get the keyword arguments passed
+    inferred_keyword: dict[str, nodes.Const] = {}
+    for k, v in call.keyword_arguments.items():
+        one_inferred = util.safe_infer(v, context)
+        if not isinstance(one_inferred, nodes.Const):
+            return iter([util.Uninferable])
+        inferred_keyword[k] = one_inferred
+
+    keyword_values: dict[str, str] = {k: v.value for k, v in inferred_keyword.items()}
+
+    try:
+        formatted_string = format_template.format(*pos_values, **keyword_values)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        # AttributeError: named field in format string was not found in the arguments
+        # IndexError: there are too few arguments to interpolate
+        # TypeError: Unsupported format string
+        # ValueError: Unknown format code
+        return iter([util.Uninferable])
+
+    return iter([nodes.const_factory(formatted_string)])
+
+
+def register(manager: AstroidManager) -> None:
+    # Builtins inference
+    register_builtin_transform(manager, infer_bool, "bool")
+    register_builtin_transform(manager, infer_super, "super")
+    register_builtin_transform(manager, infer_callable, "callable")
+    register_builtin_transform(manager, infer_property, "property")
+    register_builtin_transform(manager, infer_getattr, "getattr")
+    register_builtin_transform(manager, infer_hasattr, "hasattr")
+    register_builtin_transform(manager, infer_tuple, "tuple")
+    register_builtin_transform(manager, infer_set, "set")
+    register_builtin_transform(manager, infer_list, "list")
+    register_builtin_transform(manager, infer_dict, "dict")
+    register_builtin_transform(manager, infer_frozenset, "frozenset")
+    register_builtin_transform(manager, infer_type, "type")
+    register_builtin_transform(manager, infer_slice, "slice")
+    register_builtin_transform(manager, infer_isinstance, "isinstance")
+    register_builtin_transform(manager, infer_issubclass, "issubclass")
+    register_builtin_transform(manager, infer_len, "len")
+    register_builtin_transform(manager, infer_str, "str")
+    register_builtin_transform(manager, infer_int, "int")
+    register_builtin_transform(manager, infer_dict_fromkeys, "dict.fromkeys")
+
+    # Infer object.__new__ calls
+    manager.register_transform(
+        nodes.ClassDef,
+        inference_tip(_infer_object__new__decorator),
+        _infer_object__new__decorator_check,
+    )
+
+    manager.register_transform(
+        nodes.Call,
+        inference_tip(_infer_copy_method),
+        lambda node: isinstance(node.func, nodes.Attribute)
+        and node.func.attrname == "copy",
+    )
+
+    manager.register_transform(
+        nodes.Call,
+        inference_tip(_infer_str_format_call),
+        _is_str_format_call,
+    )

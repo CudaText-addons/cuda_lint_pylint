@@ -1,33 +1,71 @@
-# Copyright (c) 2006-2007, 2010-2014 LOGILAB S.A. (Paris, FRANCE) <contact@logilab.fr>
-# Copyright (c) 2012-2014 Google, Inc.
-# Copyright (c) 2014 Brett Cannon <brett@python.org>
-# Copyright (c) 2014 Arun Persaud <arun@nubati.net>
-# Copyright (c) 2015-2018 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2015 Florian Bruhin <me@the-compiler.org>
-# Copyright (c) 2015 Ionel Cristian Maries <contact@ionelmc.ro>
-# Copyright (c) 2016 y2kbugger <y2kbugger@users.noreply.github.com>
-# Copyright (c) 2018-2019 Nick Drozd <nicholasdrozd@gmail.com>
-# Copyright (c) 2018 Sushobhit <31987769+sushobhit27@users.noreply.github.com>
-# Copyright (c) 2018 Jace Browning <jacebrowning@gmail.com>
-# Copyright (c) 2019-2020 Pierre Sassoulas <pierre.sassoulas@gmail.com>
-# Copyright (c) 2019 Hugo van Kemenade <hugovk@users.noreply.github.com>
-
 # Licensed under the GPL: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-# For details: https://github.com/PyCQA/pylint/blob/master/COPYING
+# For details: https://github.com/pylint-dev/pylint/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/pylint/blob/main/CONTRIBUTORS.txt
 
-"""Plain text reporters:
+"""Plain text reporters:.
 
 :text: the default one grouping messages by module
 :colorized: an ANSI colorized text reporter
 """
+
+from __future__ import annotations
+
 import os
+import re
 import sys
 import warnings
+from dataclasses import asdict, fields
+from typing import TYPE_CHECKING, NamedTuple, TextIO
 
-from pylint import utils
-from pylint.interfaces import IReporter
+from pylint.message import Message
 from pylint.reporters import BaseReporter
 from pylint.reporters.ureports.text_writer import TextWriter
+
+if TYPE_CHECKING:
+    from pylint.lint import PyLinter
+    from pylint.reporters.ureports.nodes import Section
+
+
+class MessageStyle(NamedTuple):
+    """Styling of a message."""
+
+    color: str | None
+    """The color name (see `ANSI_COLORS` for available values)
+    or the color number when 256 colors are available.
+    """
+    style: tuple[str, ...] = ()
+    """Tuple of style strings (see `ANSI_COLORS` for available values)."""
+
+    def __get_ansi_code(self) -> str:
+        """Return ANSI escape code corresponding to color and style.
+
+        :raise KeyError: if a nonexistent color or style identifier is given
+
+        :return: the built escape code
+        """
+        ansi_code = [ANSI_STYLES[effect] for effect in self.style]
+        if self.color:
+            if self.color.isdigit():
+                ansi_code.extend(["38", "5"])
+                ansi_code.append(self.color)
+            else:
+                ansi_code.append(ANSI_COLORS[self.color])
+        if ansi_code:
+            return ANSI_PREFIX + ";".join(ansi_code) + ANSI_END
+        return ""
+
+    def _colorize_ansi(self, msg: str) -> str:
+        if self.color is None and len(self.style) == 0:
+            # If both color and style are not defined, then leave the text as is.
+            return msg
+        escape_code = self.__get_ansi_code()
+        # If invalid (or unknown) color, don't wrap msg with ANSI codes
+        if escape_code:
+            return f"{escape_code}{msg}{ANSI_RESET}"
+        return msg
+
+
+ColorMappingDict = dict[str, MessageStyle]
 
 TITLE_UNDERLINES = ["", "=", "-", "."]
 
@@ -55,109 +93,93 @@ ANSI_COLORS = {
     "white": "37",
 }
 
-
-def _get_ansi_code(color=None, style=None):
-    """return ansi escape code corresponding to color and style
-
-    :type color: str or None
-    :param color:
-      the color name (see `ANSI_COLORS` for available values)
-      or the color number when 256 colors are available
-
-    :type style: str or None
-    :param style:
-      style string (see `ANSI_COLORS` for available values). To get
-      several style effects at the same time, use a coma as separator.
-
-    :raise KeyError: if an unexistent color or style identifier is given
-
-    :rtype: str
-    :return: the built escape code
-    """
-    ansi_code = []
-    if style:
-        style_attrs = utils._splitstrip(style)
-        for effect in style_attrs:
-            ansi_code.append(ANSI_STYLES[effect])
-    if color:
-        if color.isdigit():
-            ansi_code.extend(["38", "5"])
-            ansi_code.append(color)
-        else:
-            ansi_code.append(ANSI_COLORS[color])
-    if ansi_code:
-        return ANSI_PREFIX + ";".join(ansi_code) + ANSI_END
-    return ""
+MESSAGE_FIELDS = {i.name for i in fields(Message)}
+"""All fields of the Message class."""
 
 
-def colorize_ansi(msg, color=None, style=None):
-    """colorize message by wrapping it with ansi escape codes
+def colorize_ansi(msg: str, msg_style: MessageStyle) -> str:
+    """Colorize message by wrapping it with ANSI escape codes."""
+    return msg_style._colorize_ansi(msg)
 
-    :type msg: str or unicode
-    :param msg: the message string to colorize
 
-    :type color: str or None
-    :param color:
-      the color identifier (see `ANSI_COLORS` for available values)
-
-    :type style: str or None
-    :param style:
-      style string (see `ANSI_COLORS` for available values). To get
-      several style effects at the same time, use a coma as separator.
-
-    :raise KeyError: if an unexistent color or style identifier is given
-
-    :rtype: str or unicode
-    :return: the ansi escaped string
-    """
-    # If both color and style are not defined, then leave the text as is
-    if color is None and style is None:
-        return msg
-    escape_code = _get_ansi_code(color, style)
-    # If invalid (or unknown) color, don't wrap msg with ansi codes
-    if escape_code:
-        return "%s%s%s" % (escape_code, msg, ANSI_RESET)
-    return msg
+def make_header(msg: Message) -> str:
+    return f"************* Module {msg.module}"
 
 
 class TextReporter(BaseReporter):
-    """Reports messages and layouts in plain text"""
+    """Reports messages and layouts in plain text."""
 
-    __implements__ = IReporter
     name = "text"
     extension = "txt"
     line_format = "{path}:{line}:{column}: {msg_id}: {msg} ({symbol})"
 
-    def __init__(self, output=None):
-        BaseReporter.__init__(self, output)
-        self._modules = set()
-        self._template = None
+    def __init__(self, output: TextIO | None = None) -> None:
+        super().__init__(output)
+        self._modules: set[str] = set()
+        self._template = self.line_format
+        self._fixed_template = self.line_format
+        """The output format template with any unrecognized arguments removed."""
 
-    def on_set_current_module(self, module, filepath):
-        self._template = str(self.linter.config.msg_template or self.line_format)
+    def on_set_current_module(self, module: str, filepath: str | None) -> None:
+        """Set the format template to be used and check for unrecognized arguments."""
+        template = str(self.linter.config.msg_template or self._template)
 
-    def write_message(self, msg):
-        """Convenience method to write a formatted message with class default template"""
-        self.writeln(msg.format(self._template))
+        # Return early if the template is the same as the previous one
+        if template == self._template:
+            return
 
-    def handle_message(self, msg):
-        """manage message of different type and in the context of path"""
+        # Set template to the currently selected template
+        self._template = template
+
+        # Check to see if all parameters in the template are attributes of the Message
+        arguments = re.findall(r"\{(\w+?)(:.*)?\}", template)
+        for argument in arguments:
+            if argument[0] not in MESSAGE_FIELDS:
+                warnings.warn(
+                    f"Don't recognize the argument '{argument[0]}' in the --msg-template. "
+                    "Are you sure it is supported on the current version of pylint?",
+                    stacklevel=2,
+                )
+                template = re.sub(r"\{" + argument[0] + r"(:.*?)?\}", "", template)
+        self._fixed_template = template
+
+    def write_message(self, msg: Message) -> None:
+        """Convenience method to write a formatted message with class default
+        template.
+        """
+        self_dict = asdict(msg)
+        for key in ("end_line", "end_column"):
+            self_dict[key] = self_dict[key] or ""
+
+        self.writeln(self._fixed_template.format(**self_dict))
+
+    def handle_message(self, msg: Message) -> None:
+        """Manage message of different type and in the context of path."""
         if msg.module not in self._modules:
-            if msg.module:
-                self.writeln("************* Module %s" % msg.module)
-                self._modules.add(msg.module)
-            else:
-                self.writeln("************* ")
+            self.writeln(make_header(msg))
+            self._modules.add(msg.module)
         self.write_message(msg)
 
-    def _display(self, layout):
-        """launch layouts display"""
+    def _display(self, layout: Section) -> None:
+        """Launch layouts display."""
         print(file=self.out)
         TextWriter().format(layout, self.out)
 
 
+class NoHeaderReporter(TextReporter):
+    """Reports messages and layouts in plain text without a module header."""
+
+    name = "no-header"
+
+    def handle_message(self, msg: Message) -> None:
+        """Write message(s) without module header."""
+        if msg.module not in self._modules:
+            self._modules.add(msg.module)
+        self.write_message(msg)
+
+
 class ParseableTextReporter(TextReporter):
-    """a reporter very similar to TextReporter, but display messages in a form
+    """A reporter very similar to TextReporter, but display messages in a form
     recognized by most text editors :
 
     <filename>:<linenum>:<msg>
@@ -166,84 +188,102 @@ class ParseableTextReporter(TextReporter):
     name = "parseable"
     line_format = "{path}:{line}: [{msg_id}({symbol}), {obj}] {msg}"
 
-    def __init__(self, output=None):
+    def __init__(self, output: TextIO | None = None) -> None:
         warnings.warn(
-            "%s output format is deprecated. This is equivalent "
-            "to --msg-template=%s" % (self.name, self.line_format),
+            f"{self.name} output format is deprecated. This is equivalent to --msg-template={self.line_format}",
             DeprecationWarning,
+            stacklevel=2,
         )
-        TextReporter.__init__(self, output)
+        super().__init__(output)
 
 
 class VSTextReporter(ParseableTextReporter):
-    """Visual studio text reporter"""
+    """Visual studio text reporter."""
 
     name = "msvs"
     line_format = "{path}({line}): [{msg_id}({symbol}){obj}] {msg}"
 
 
 class ColorizedTextReporter(TextReporter):
-    """Simple TextReporter that colorizes text output"""
+    """Simple TextReporter that colorizes text output."""
 
     name = "colorized"
-    COLOR_MAPPING = {
-        "I": ("green", None),
-        "C": (None, "bold"),
-        "R": ("magenta", "bold, italic"),
-        "W": ("magenta", None),
-        "E": ("red", "bold"),
-        "F": ("red", "bold, underline"),
-        "S": ("yellow", "inverse"),  # S stands for module Separator
+    COLOR_MAPPING: ColorMappingDict = {
+        "I": MessageStyle("green"),
+        "C": MessageStyle(None, ("bold",)),
+        "R": MessageStyle("magenta", ("bold", "italic")),
+        "W": MessageStyle("magenta"),
+        "E": MessageStyle("red", ("bold",)),
+        "F": MessageStyle("red", ("bold", "underline")),
+        "S": MessageStyle("yellow", ("inverse",)),  # S stands for module Separator
     }
 
-    def __init__(self, output=None, color_mapping=None):
-        TextReporter.__init__(self, output)
-        self.color_mapping = color_mapping or dict(ColorizedTextReporter.COLOR_MAPPING)
+    def __init__(
+        self,
+        output: TextIO | None = None,
+        color_mapping: ColorMappingDict | None = None,
+    ) -> None:
+        super().__init__(output)
+        self.color_mapping = color_mapping or ColorizedTextReporter.COLOR_MAPPING
         ansi_terms = ["xterm-16color", "xterm-256color"]
         if os.environ.get("TERM") not in ansi_terms:
             if sys.platform == "win32":
-                # pylint: disable=import-error,import-outside-toplevel
+                # pylint: disable=import-outside-toplevel
                 import colorama
 
                 self.out = colorama.AnsiToWin32(self.out)
 
-    def _get_decoration(self, msg_id):
-        """Returns the tuple color, style associated with msg_id as defined
-        in self.color_mapping
-        """
-        try:
-            return self.color_mapping[msg_id[0]]
-        except KeyError:
-            return None, None
+    def _get_decoration(self, msg_id: str) -> MessageStyle:
+        """Returns the message style as defined in self.color_mapping."""
+        return self.color_mapping.get(msg_id[0]) or MessageStyle(None)
 
-    def handle_message(self, msg):
-        """manage message of different types, and colorize output
-        using ansi escape codes
+    def handle_message(self, msg: Message) -> None:
+        """Manage message of different types, and colorize output
+        using ANSI escape codes.
         """
         if msg.module not in self._modules:
-            color, style = self._get_decoration("S")
-            if msg.module:
-                modsep = colorize_ansi(
-                    "************* Module %s" % msg.module, color, style
-                )
-            else:
-                modsep = colorize_ansi("************* %s" % msg.module, color, style)
+            msg_style = self._get_decoration("S")
+            modsep = colorize_ansi(make_header(msg), msg_style)
             self.writeln(modsep)
             self._modules.add(msg.module)
-        color, style = self._get_decoration(msg.C)
+        msg_style = self._get_decoration(msg.C)
 
-        msg = msg._replace(
-            **{
-                attr: colorize_ansi(getattr(msg, attr), color, style)
-                for attr in ("msg", "symbol", "category", "C")
-            }
-        )
+        msg.msg = colorize_ansi(msg.msg, msg_style)
+        msg.symbol = colorize_ansi(msg.symbol, msg_style)
+        msg.category = colorize_ansi(msg.category, msg_style)
+        msg.C = colorize_ansi(msg.C, msg_style)
         self.write_message(msg)
 
 
-def register(linter):
-    """Register the reporter classes with the linter."""
+class GithubReporter(TextReporter):
+    """Report messages in GitHub's special format to annotate code in its user
+    interface.
+    """
+
+    name = "github"
+    line_format = "::{category} file={path},line={line},endline={end_line},col={column},title={msg_id}::{msg}"
+    category_map = {
+        "F": "error",
+        "E": "error",
+        "W": "warning",
+        "C": "notice",
+        "R": "notice",
+        "I": "notice",
+    }
+
+    def write_message(self, msg: Message) -> None:
+        self_dict = asdict(msg)
+        for key in ("end_line", "end_column"):
+            self_dict[key] = self_dict[key] or ""
+
+        self_dict["category"] = self.category_map.get(msg.C) or "error"
+        self.writeln(self._fixed_template.format(**self_dict))
+
+
+def register(linter: PyLinter) -> None:
     linter.register_reporter(TextReporter)
+    linter.register_reporter(NoHeaderReporter)
     linter.register_reporter(ParseableTextReporter)
     linter.register_reporter(VSTextReporter)
     linter.register_reporter(ColorizedTextReporter)
+    linter.register_reporter(GithubReporter)

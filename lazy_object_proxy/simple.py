@@ -1,8 +1,8 @@
 import operator
 
-from .compat import PY2
-from .compat import PY3
+from .compat import string_types
 from .compat import with_metaclass
+from .utils import await_
 from .utils import cached_property
 from .utils import identity
 
@@ -14,7 +14,7 @@ def make_proxy_method(code):
     return proxy_wrapper
 
 
-class _ProxyMethods(object):
+class _ProxyMethods:
     # We use properties to override the values of __module__ and
     # __doc__. If we add these in ObjectProxy, the derived class
     # __dict__ will still be setup to have string variants of these
@@ -69,6 +69,10 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     def __init__(self, factory):
         self.__dict__['__factory__'] = factory
 
+    @property
+    def __resolved__(self):
+        return '__wrapped__' in self.__dict__
+
     @cached_property
     def __wrapped__(self):
         self = self.__dict__
@@ -83,28 +87,29 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     __annotations__ = property(make_proxy_method(operator.attrgetter('__anotations__')))
     __dir__ = make_proxy_method(dir)
     __str__ = make_proxy_method(str)
-
-    if PY3:
-        __bytes__ = make_proxy_method(bytes)
+    __bytes__ = make_proxy_method(bytes)
 
     def __repr__(self, __getattr__=object.__getattribute__):
         if '__wrapped__' in self.__dict__:
             return '<{} at 0x{:x} wrapping {!r} at 0x{:x} with factory {!r}>'.format(
-                type(self).__name__, id(self),
-                self.__wrapped__, id(self.__wrapped__),
-                self.__factory__
+                type(self).__name__, id(self), self.__wrapped__, id(self.__wrapped__), self.__factory__
             )
         else:
-            return '<{} at 0x{:x} with factory {!r}>'.format(
-                type(self).__name__, id(self),
-                self.__factory__
-            )
+            return f'<{type(self).__name__} at 0x{id(self):x} with factory {self.__factory__!r}>'
+
+    def __fspath__(self):
+        wrapped = self.__wrapped__
+        if isinstance(wrapped, string_types):
+            return wrapped
+        else:
+            fspath = getattr(wrapped, '__fspath__', None)
+            if fspath is None:
+                return wrapped
+            else:
+                return fspath()
 
     __reversed__ = make_proxy_method(reversed)
-
-    if PY3:
-        __round__ = make_proxy_method(round)
-
+    __round__ = make_proxy_method(round)
     __lt__ = make_proxy_method(operator.lt)
     __le__ = make_proxy_method(operator.le)
     __eq__ = make_proxy_method(operator.eq)
@@ -136,7 +141,7 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     __add__ = make_proxy_method(operator.add)
     __sub__ = make_proxy_method(operator.sub)
     __mul__ = make_proxy_method(operator.mul)
-    __div__ = make_proxy_method(operator.div if PY2 else operator.truediv)
+    __matmul__ = make_proxy_method(operator.matmul)
     __truediv__ = make_proxy_method(operator.truediv)
     __floordiv__ = make_proxy_method(operator.floordiv)
     __mod__ = make_proxy_method(operator.mod)
@@ -156,6 +161,9 @@ class Proxy(with_metaclass(_ProxyMetaType)):
 
     def __rmul__(self, other):
         return other * self.__wrapped__
+
+    def __rmatmul__(self, other):
+        return other @ self.__wrapped__
 
     def __rdiv__(self, other):
         return operator.div(other, self.__wrapped__)
@@ -193,7 +201,7 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     __iadd__ = make_proxy_method(operator.iadd)
     __isub__ = make_proxy_method(operator.isub)
     __imul__ = make_proxy_method(operator.imul)
-    __idiv__ = make_proxy_method(operator.idiv if PY2 else operator.itruediv)
+    __imatmul__ = make_proxy_method(operator.imatmul)
     __itruediv__ = make_proxy_method(operator.itruediv)
     __ifloordiv__ = make_proxy_method(operator.ifloordiv)
     __imod__ = make_proxy_method(operator.imod)
@@ -207,26 +215,22 @@ class Proxy(with_metaclass(_ProxyMetaType)):
     __pos__ = make_proxy_method(operator.pos)
     __abs__ = make_proxy_method(operator.abs)
     __invert__ = make_proxy_method(operator.invert)
-
     __int__ = make_proxy_method(int)
-
-    if PY2:
-        __long__ = make_proxy_method(long)  # noqa
-
     __float__ = make_proxy_method(float)
     __oct__ = make_proxy_method(oct)
     __hex__ = make_proxy_method(hex)
-    __index__ = make_proxy_method(operator.index)
+
+    def __index__(self):
+        if hasattr(self.__wrapped__, '__index__'):
+            return operator.index(self.__wrapped__)
+        else:
+            return int(self.__wrapped__)
+
     __len__ = make_proxy_method(len)
     __contains__ = make_proxy_method(operator.contains)
     __getitem__ = make_proxy_method(operator.getitem)
     __setitem__ = make_proxy_method(operator.setitem)
     __delitem__ = make_proxy_method(operator.delitem)
-
-    if PY2:
-        __getslice__ = make_proxy_method(operator.getslice)
-        __setslice__ = make_proxy_method(operator.setslice)
-        __delslice__ = make_proxy_method(operator.delslice)
 
     def __enter__(self):
         return self.__wrapped__.__enter__()
@@ -244,3 +248,12 @@ class Proxy(with_metaclass(_ProxyMetaType)):
 
     def __reduce_ex__(self, protocol):
         return identity, (self.__wrapped__,)
+
+    if await_:
+        from .utils import __aenter__
+        from .utils import __aexit__
+        from .utils import __aiter__
+        from .utils import __anext__
+        from .utils import __await__
+
+        __aiter__, __anext__, __await__, __aenter__, __aexit__  # noqa

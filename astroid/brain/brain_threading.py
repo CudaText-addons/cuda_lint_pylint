@@ -1,14 +1,14 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) 2016, 2018-2019 Claudiu Popa <pcmanticore@gmail.com>
-# Copyright (c) 2017 Łukasz Rogalski <rogalski.91@gmail.com>
-
 # Licensed under the LGPL: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
-# For details: https://github.com/PyCQA/astroid/blob/master/COPYING.LESSER
-import astroid
+# For details: https://github.com/pylint-dev/astroid/blob/main/LICENSE
+# Copyright (c) https://github.com/pylint-dev/astroid/blob/main/CONTRIBUTORS.txt
+
+from astroid.brain.helpers import register_module_extender
+from astroid.builder import parse
+from astroid.manager import AstroidManager
 
 
 def _thread_transform():
-    return astroid.parse(
+    return parse(
         """
     class lock(object):
         def acquire(self, blocking=True, timeout=-1):
@@ -22,10 +22,11 @@ def _thread_transform():
         def locked(self):
             return False
 
-    def Lock():
+    def Lock(*args, **kwargs):
         return lock()
     """
     )
 
 
-astroid.register_module_extender(astroid.MANAGER, "threading", _thread_transform)
+def register(manager: AstroidManager) -> None:
+    register_module_extender(manager, "threading", _thread_transform)
