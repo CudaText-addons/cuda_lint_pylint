@@ -1,6 +1,6 @@
 2025.02.27
 + add: updated all libs
-+ add: updated default pylint.sample.rc
++ add: updated default pylint.sample.rc; NOTE that section [MASTER] was changed to [MAIN]
 
 2020.07.21
 + add: show error codes like 'Exxxx' in linter results
